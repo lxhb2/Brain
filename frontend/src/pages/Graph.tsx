@@ -12,7 +12,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { Network, Loader2, SlidersHorizontal, LayoutGrid } from 'lucide-react'
 import { api, type GraphData } from '@/api/client'
-import { NoteNode, type NoteNodeData } from '@/components/NoteNode'
+import { NoteNode, colorForDevice, type NoteNodeData } from '@/components/NoteNode'
 import GraphFilters, { type GraphFiltersState } from '@/components/GraphFilters'
 import NodeDetailDrawer from '@/components/NodeDetailDrawer'
 import { UploadButton } from '@/components/UploadButton'
