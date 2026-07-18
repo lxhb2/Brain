@@ -1,8 +1,8 @@
 # Brain 前端 —— 多阶段构建（pnpm 构建 + nginx 托管）
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 
-# 启用 pnpm（与本地开发保持一致，避免 lockfile 不一致）
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# 启用 pnpm（固定版本，避免 corepack 拉到不兼容的 latest）
+RUN corepack enable && corepack prepare pnpm@9 --activate
 
 WORKDIR /app
 
