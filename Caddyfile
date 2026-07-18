@@ -1,0 +1,40 @@
+# Brain · Caddy 反向代理配置
+#
+# 用法：
+#   1. 把 brain.example.com 改成你的域名
+#   2. docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Caddy 会自动申请 Let's Encrypt 证书并续期，无需手动维护
+# 前提：域名 A 记录已指向本机公网 IP，且 80/443 端口对外开放
+
+brain.example.com {
+	# 反向代理到前端 nginx 容器（前端再代理 /api 到后端）
+	reverse_proxy brain-frontend:80
+
+	# 安全响应头
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		# 允许 PWA 全屏
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+	}
+
+	# 上传体积（OCR 原图可能较大）
+	request_body {
+		max_size 50MB
+	}
+
+	# 压缩
+	encode gzip zstd
+
+	# 访问日志
+	log {
+		output file /data/access.log {
+			roll_size 10MB
+			roll_keep 3
+		}
+		format common
+	}
+}

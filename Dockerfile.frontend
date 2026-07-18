@@ -1,0 +1,32 @@
+# Brain 前端 —— 多阶段构建（pnpm 构建 + nginx 托管）
+FROM node:20-slim AS builder
+
+# 启用 pnpm（与本地开发保持一致，避免 lockfile 不一致）
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /app
+
+# 先拷依赖清单，利用层缓存
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+
+# 注意：.npmrc 里若配了 registry，可在此处 COPY；默认用 npmjs
+RUN pnpm install --frozen-lockfile --no-audit --no-fund
+
+# 拷源码并构建
+COPY frontend/ ./
+RUN pnpm run build
+
+# ---- 运行阶段：nginx 静态托管 + API 反代 ----
+FROM nginx:alpine
+
+# nginx 配置：SPA 路由回退 + 反向代理 /api 到后端
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+# 健康检查：nginx 自身
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget -q --spider http://127.0.0.1/ || exit 1
+
+CMD ["nginx", "-g", "daemon off;"]

@@ -1,0 +1,41 @@
+# Brain · 生产环境 override
+#
+# 在 docker-compose.yml 基础上叠加：
+#   - Caddy 自动 HTTPS 反向代理
+#   - 前端不再对外暴露 8080（只走 Caddy 443）
+#   - 后端不再对外暴露 8000（只走内部网络）
+#
+# 启动：
+#   1. 编辑 Caddyfile 把 brain.example.com 改成你的域名
+#   2. docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+services:
+  backend:
+    # 生产环境不直接对外暴露端口，仅内网可达（Caddy 反代访问）
+    ports: []
+
+  frontend:
+    # 前端也只走 Caddy，不直接暴露 8080
+    ports: []
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: brain-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"     # HTTP（用于 Let's Encrypt HTTP-01 验证 + 跳转 HTTPS）
+      - "443:443"   # HTTPS
+      - "443:443/udp"  # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy-data:/data         # 证书与状态持久化
+      - ./data/caddy-config:/config
+    depends_on:
+      - frontend
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - brain-net

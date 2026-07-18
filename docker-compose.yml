@@ -1,0 +1,108 @@
+# Brain · 个人手写笔记知识图谱
+# 一键部署：docker compose up -d --build
+# 带 Syncthing 同步：docker compose --profile sync up -d --build
+# 带 HTTPS 反代：     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: brain-backend:latest
+    container_name: brain-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # 笔记同步目录（Syncthing 也指向这里）
+      - ./data/synced_notes:/app/data/synced_notes
+      # 数据库 + 缩略图持久化（整体 data 目录）
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      # 容器内路径
+      - SYNCED_NOTES_ROOT=/app/data/synced_notes
+      - THUMBNAIL_DIR=/app/data/thumbnails
+      - DB_PATH=/app/data/brain.db
+      # 生产环境 worker 数（OCR 是 IO 密集，1 个够用；调高会多占内存）
+      - UVICORN_WORKERS=1
+    # 资源约束：OCR 调外部 API 不耗本地算力，256MB 足够
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+    # 日志限制：单文件 10MB，最多 3 份，防止长期运行撑爆磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - brain-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: brain-frontend:latest
+    container_name: brain-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - brain-net
+
+  # Syncthing 笔记同步（可选，用 --profile sync 启用）
+  # 启用后手机/平板的笔记会自动同步到 ./data/synced_notes
+  syncthing:
+    profiles: ["sync"]
+    image: lscr.io/linuxserver/syncthing:latest
+    container_name: brain-syncthing
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data/syncthing-config:/config
+      - ./data/synced_notes:/data/synced_notes
+    ports:
+      - "8384:8384"   # Web UI
+      - "22000:22000/tcp"
+      - "22000:22000/udp"
+      - "21027:21027/udp"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - brain-net
+
+networks:
+  brain-net:
+    driver: bridge

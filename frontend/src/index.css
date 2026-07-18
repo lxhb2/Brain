@@ -1,0 +1,158 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.55;
+  font-weight: 400;
+  color-scheme: dark;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* 移动端：阻止双击缩放与文本选择拖拽的卡顿 */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+body {
+  /* 触摸滚动顺滑 */
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+  /* 安全区留白由各组件用 env() 自行处理 */
+}
+
+body {
+  background-color: #0b1020;
+  color: #f5f0e1;
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgba(34, 211, 238, 0.06), transparent 55%),
+    radial-gradient(ellipse at 82% 100%, rgba(245, 166, 35, 0.05), transparent 50%),
+    radial-gradient(circle at 0% 60%, rgba(110, 168, 254, 0.05), transparent 45%);
+  background-attachment: fixed;
+}
+
+/* 极淡噪点纹理，营造胶片质感 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* 自定义滚动条 —— 与深空主题统一 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(110, 168, 254, 0.25) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(110, 168, 254, 0.22);
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(110, 168, 254, 0.4);
+}
+
+@layer components {
+  /* 玻璃面板 */
+  .glass-panel {
+    @apply border border-white/5 bg-void-200/55 backdrop-blur-xl;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 8px 40px rgba(0, 0, 0, 0.45);
+  }
+  .glass-soft {
+    @apply border border-white/5 bg-void-100/40 backdrop-blur-md;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs text-dust transition-colors;
+  }
+  .chip-active {
+    @apply border-flux/40 bg-flux/10 text-flux;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-starlight/80 transition-all hover:border-white/20 hover:bg-white/[0.07] hover:text-starlight;
+  }
+  /* 安全区辅助：底部导航 / 顶部状态栏避让 */
+  .safe-top {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .safe-x {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+}
+
+/* —— 移动端触摸优化 —— */
+@media (hover: none) and (pointer: coarse) {
+  /* 触屏设备：禁用 hover 态的视觉跳变，避免「粘性 hover」 */
+  .group:hover {
+    transform: none !important;
+  }
+  /* 输入框增大字号，避免 iOS/Android 自动缩放页面 */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* React Flow 深空主题覆盖 */
+.react-flow__attribution {
+  display: none !important;
+}
+.react-flow__minimap {
+  background: rgba(11, 16, 32, 0.7) !important;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.react-flow__controls {
+  background: rgba(11, 16, 32, 0.7) !important;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  color: #8b93a7 !important;
+  fill: #8b93a7 !important;
+}
+.react-flow__controls-button:hover {
+  background: rgba(110, 168, 254, 0.12) !important;
+}
+.react-flow__edge-path {
+  stroke-linecap: round;
+}
+.react-flow__handle {
+  opacity: 0;
+}

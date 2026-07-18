@@ -1,0 +1,65 @@
+# Brain · systemd service 文件
+#
+# 用途：在 Linux/WSL 上不依赖 Docker，直接用 Python 跑 Brain 后端
+# 适合：资源紧张的小服务器（Oracle Free 2C12G、阿里云 99 元/年）
+#
+# 安装步骤：
+#   1. sudo cp scripts/brain.service /etc/systemd/system/brain.service
+#   2. 编辑文件，把 /opt/brain 改成你的实际项目路径，把 python 改成你的 venv 路径
+#   3. sudo systemctl daemon-reload
+#   4. sudo systemctl enable --now brain
+#   5. sudo systemctl status brain  # 查看状态
+#   6. journalctl -u brain -f        # 查看日志
+#
+# WSL 用户注意：
+#   WSL2 默认不启用 systemd，需要在 /etc/wsl.conf 加：
+#     [boot]
+#     systemd=true
+#   然后在 PowerShell 执行 wsl --shutdown 重启 WSL
+
+[Unit]
+Description=Brain - Personal Handwritten Notes Knowledge Graph
+Documentation=https://github.com/your/brain
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brain
+Group=brain
+
+# 项目根目录与虚拟环境（按需修改）
+WorkingDirectory=/opt/brain/backend
+EnvironmentFile=/opt/brain/.env
+
+# 用 venv 的 python 启动 uvicorn
+ExecStart=/opt/brain/backend/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
+
+# 自动重启
+Restart=always
+RestartSec=5
+
+# 资源限制
+MemoryMax=512M
+CPUQuota=100%
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/brain/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
