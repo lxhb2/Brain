@@ -80,7 +80,8 @@ services:
   # 启用后手机/平板的笔记会自动同步到 ./data/synced_notes
   syncthing:
     profiles: ["sync"]
-    image: lscr.io/linuxserver/syncthing:latest
+    # 优先用 docker hub 官方镜像（国内拉取更稳定），备用 lscr.io
+    image: syncthing/syncthing:latest
     container_name: brain-syncthing
     restart: unless-stopped
     environment:
@@ -88,8 +89,8 @@ services:
       - PGID=1000
       - TZ=Asia/Shanghai
     volumes:
-      - ./data/syncthing-config:/config
-      - ./data/synced_notes:/data/synced_notes
+      - ./data/syncthing-config:/var/syncthing/config
+      - ./data/synced_notes:/var/syncthing/data/synced_notes
     ports:
       - "8384:8384"   # Web UI
       - "22000:22000/tcp"
