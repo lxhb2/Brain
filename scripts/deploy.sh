@@ -104,8 +104,20 @@ init_dirs() {
 # ---- 启动服务 ----
 start_services() {
     local compose_args=(-d --build)
+
+    # 检测 docker compose 是否支持 --profile（v2.0+ 支持，旧版本用 COMPOSE_PROFILES 环境变量）
+    local profile_supported=true
+    if ! docker compose up --help 2>&1 | grep -q -- "--profile"; then
+        profile_supported=false
+    fi
+
     if $SYNC; then
-        compose_args+=(--profile sync)
+        if $profile_supported; then
+            compose_args+=(--profile sync)
+        else
+            export COMPOSE_PROFILES="${COMPOSE_PROFILES:+$COMPOSE_PROFILES,}sync"
+            info "compose 版本不支持 --profile，改用 COMPOSE_PROFILES=sync"
+        fi
     fi
 
     if [[ "$MODE" == "prod" ]]; then
