@@ -318,4 +318,22 @@ export const api = {
   vacuumDb: () => postJSON<{ vacuumed: boolean; before_bytes: number; after_bytes: number }>('/api/system/vacuum', {}),
   reprocessAll: () => postJSON<{ reprocessed: boolean; count: number }>('/api/system/reprocess-all', {}),
   getSources: () => getJSON<{ sources: SourceStat[] }>('/api/system/sources'),
+
+  // —— 笔记上传 ——
+  uploadNotes: async (files: File[], device?: string, app?: string) => {
+    const fd = new FormData()
+    files.forEach((f) => fd.append('files', f))
+    if (device) fd.append('device', device)
+    if (app) fd.append('app', app)
+    const res = await fetch('/api/upload', { method: 'POST', body: fd })
+    if (!res.ok) throw new Error(`上传失败：${res.status}`)
+    return res.json() as Promise<{
+      status: string
+      total: number
+      success: number
+      failed: number
+      files: Array<{ filename: string; success: boolean; error?: string; saved_as?: string }>
+      message: string
+    }>
+  },
 }

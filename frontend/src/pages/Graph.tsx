@@ -12,9 +12,10 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { Network, Loader2, SlidersHorizontal, LayoutGrid } from 'lucide-react'
 import { api, type GraphData } from '@/api/client'
-import { NoteNode, colorForDevice, type NoteNodeData } from '@/components/NoteNode'
+import { NoteNode, type NoteNodeData } from '@/components/NoteNode'
 import GraphFilters, { type GraphFiltersState } from '@/components/GraphFilters'
 import NodeDetailDrawer from '@/components/NodeDetailDrawer'
+import { UploadButton } from '@/components/UploadButton'
 import { computeLayout } from '@/lib/layoutGraph'
 
 const EDGE_COLOR: Record<string, string> = {
@@ -167,8 +168,11 @@ function GraphCanvas() {
               <span className="rounded-full bg-flux/20 px-1.5 py-0.5 font-mono text-[9px] text-flux">{activeFilterCount}</span>
             )}
           </button>
-          <div className="rounded-lg border border-white/5 bg-void-300/70 px-2.5 py-1.5 font-mono text-[10px] text-dust backdrop-blur-md">
-            {graph?.nodes.length ?? 0} 节点
+          <div className="flex items-center gap-2">
+            <UploadButton onUploaded={fetchGraph} />
+            <div className="rounded-lg border border-white/5 bg-void-300/70 px-2.5 py-1.5 font-mono text-[10px] text-dust backdrop-blur-md">
+              {graph?.nodes.length ?? 0} 节点
+            </div>
           </div>
         </div>
 
@@ -204,6 +208,11 @@ function GraphCanvas() {
             <span className="font-mono text-xs text-dust">绘制星座中…</span>
           </div>
         )}
+
+        {/* 桌面端上传按钮（右上角） */}
+        <div className="absolute right-4 top-4 z-20 hidden md:block">
+          <UploadButton onUploaded={fetchGraph} />
+        </div>
 
         <ReactFlow
           nodes={rfNodes}
