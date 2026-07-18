@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { X, ArrowRight, ExternalLink } from 'lucide-react'
-import { api, type Note, type GraphData } from '@/api/client'
+import { X, ArrowRight, ExternalLink, RefreshCw, Loader2, ChevronDown, Cpu } from 'lucide-react'
+import { api, type Note, type GraphData, type OcrModel } from '@/api/client'
 import { StatusBadge, shortDate } from '@/components/StatusBadge'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +21,9 @@ export default function NodeDetailDrawer({ noteId, onClose }: NodeDetailDrawerPr
   const [note, setNote] = useState<Note | null>(null)
   const [neighbors, setNeighbors] = useState<GraphData | null>(null)
   const [loading, setLoading] = useState(false)
+  const [ocrModels, setOcrModels] = useState<OcrModel[]>([])
+  const [reocrMenuOpen, setReocrMenuOpen] = useState(false)
+  const [reocring, setReocring] = useState<string | null>(null) // 进行中的 model_id
 
   useEffect(() => {
     if (noteId == null) {
@@ -36,6 +39,35 @@ export default function NodeDetailDrawer({ noteId, onClose }: NodeDetailDrawerPr
       })
       .finally(() => setLoading(false))
   }, [noteId])
+
+  // 加载 OCR 模型列表（用于「重新 OCR」下拉）
+  useEffect(() => {
+    api.listOcrModels().then((r) => setOcrModels(r.models)).catch(() => {})
+  }, [])
+
+  const reocrWith = async (model: OcrModel | null) => {
+    if (!note) return
+    setReocrMenuOpen(false)
+    const mid = model?.id
+    setReocring(mid ?? 'primary')
+    try {
+      const res = await api.reocrNote(note.id, mid)
+      // 更新本地 note 状态
+      setNote({
+        ...note,
+        status: res.status as Note['status'],
+        title: res.title,
+        ocr_text: res.ocr_text,
+        summary: res.summary,
+        keywords: res.keywords,
+        ocr_model: res.ocr_model,
+      })
+    } catch (e) {
+      alert('重新 OCR 失败：' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setReocring(null)
+    }
+  }
 
   if (noteId == null) return null
 
@@ -149,9 +181,60 @@ export default function NodeDetailDrawer({ noteId, onClose }: NodeDetailDrawerPr
         <div className="p-4 text-sm text-dust">加载失败</div>
       )}
 
-      {/* 底部跳转 */}
+      {/* 底部跳转 + 重新 OCR */}
       {note && (
-        <div className="border-t border-white/5 p-4">
+        <div className="space-y-2 border-t border-white/5 p-4">
+          {/* 显示当前用的 OCR 模型 */}
+          {note.ocr_model && (
+            <div className="flex items-center gap-1.5 rounded-md border border-white/5 bg-white/[0.02] px-2.5 py-1.5 text-[10px] text-dust">
+              <Cpu className="h-3 w-3" strokeWidth={1.5} />
+              <span>OCR 模型：</span>
+              <span className="font-mono text-flux/80">
+                {ocrModels.find((m) => m.id === note.ocr_model)?.name ?? note.ocr_model}
+              </span>
+            </div>
+          )}
+
+          {/* 重新 OCR 下拉 */}
+          <div className="relative">
+            <button
+              onClick={() => setReocrMenuOpen((v) => !v)}
+              disabled={reocring !== null}
+              className="btn-ghost w-full justify-center"
+            >
+              {reocring !== null ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+              重新 OCR
+              <ChevronDown className="h-3 w-3" />
+            </button>
+            {reocrMenuOpen && (
+              <div className="absolute bottom-full left-0 right-0 mb-2 max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-void-200/95 p-1 shadow-panel backdrop-blur-md">
+                <div className="px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-dust/70">
+                  选择 OCR 模型
+                </div>
+                {ocrModels.filter((m) => m.enabled).map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => reocrWith(m)}
+                    className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-xs text-starlight hover:bg-white/5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate">{m.name}</div>
+                      <div className="truncate font-mono text-[10px] text-dust/70">{m.model}</div>
+                    </div>
+                    {m.is_primary && <span className="chip text-[9px] text-flux">主</span>}
+                  </button>
+                ))}
+                {ocrModels.filter((m) => m.enabled).length === 0 && (
+                  <div className="px-2 py-2 text-[11px] text-dust/60">无可用模型</div>
+                )}
+              </div>
+            )}
+          </div>
+
           <button
             onClick={() => navigate('/notes/' + note.id)}
             className="btn-ghost w-full justify-center"

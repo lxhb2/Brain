@@ -1,11 +1,13 @@
-"""OCR + 结构化 Pipeline。
+"""OCR + 结构化 Pipeline（多模型支持）。
 
-主流程 process_note(note_id):
+主流程 process_note(note_id, model_id=None):
   1. 加载笔记行
   2. 文件转图像（PDF 用 PyMuPDF，PNG/JPG 直接读字节）
-  3. 调 GPT-4o vision 抽取 {title, ocr_text, summary, keywords[]}
-  4. 调 text-embedding-3-small 生成 embedding
-  5. 写库 + 生成缩略图
+  3. 调多模态 vision 模型抽取 {title, ocr_text, summary, keywords[]}
+     - 若指定 model_id，仅用该模型
+     - 否则用 primary 模型，失败时按 enabled 顺序 fallback
+  4. 调 embedding 模型生成向量
+  5. 写库（含 ocr_model 字段）+ 生成缩略图
   6. 触发 graph_api.recompute_links_for_note
 
 当未配置 OPENAI_API_KEY 时进入 DEMO 模式：
@@ -26,6 +28,7 @@ from typing import Any, Dict, List, Optional
 
 import database
 import graph_api
+import settings_store
 from config import get_config
 
 logger = logging.getLogger("brain.ocr")
@@ -176,19 +179,44 @@ def _parse_structured(raw: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # OCR + 结构化（真实 / Demo）
 # ---------------------------------------------------------------------------
-_OCR_PROMPT = (
-    "你是一个手写笔记 OCR 与结构化助手。请仔细识别图片中的手写内容，"
-    "并以 JSON 返回：\n"
-    '{"title": "简短标题", "ocr_text": "完整识别文本", '
-    '"summary": "1-3 句摘要", "keywords": ["关键词1", "关键词2"]}\n'
-    "要求：仅返回 JSON，不要任何解释；关键词 3-8 个；"
-    "若有多张图，ocr_text 按页用 \\n\\n 分隔。"
-)
+_OCR_PROMPT = """你是一名专业的手写笔记 OCR 与结构化助手。请仔细识别图片中的所有手写内容，要求：
+
+1. **完整准确地转录**所有手写文字，包括公式、符号、图表标注、箭头说明等。
+2. 保留原文的段落结构与层次（标题、列表、缩进）。
+3. 数学公式用 LaTeX 语法（行内 $...$，独立块 $$...$$）。
+4. 表格用 Markdown 表格语法。
+5. 无法识别的字用 □ 占位，不要瞎猜。
+6. 若有多张图，按页顺序输出，页与页之间用 `---PAGE---` 分隔。
+
+识别完成后，再用同样的 JSON 格式返回结构化字段：
+
+```json
+{
+  "title": "简短标题（5-15字，概括主题）",
+  "ocr_text": "完整识别的文本（含公式/表格的 markdown）",
+  "summary": "1-3 句摘要，提炼核心知识点",
+  "keywords": ["关键词1", "关键词2", ...]
+}
+```
+
+要求：
+- 仅返回上述 JSON 对象，不要任何额外解释或前后缀
+- 关键词 3-8 个，涵盖主题、方法、对象等
+- title 不要包含"笔记""note"等无意义词
+- ocr_text 必须保留全部识别内容，不要截断"""
 
 
-def _ocr_structured(client, images: List[str]) -> Dict[str, Any]:
-    """调用 GPT-4o vision 抽取结构化字段。"""
-    cfg = get_config()
+def _call_vision_model(client, model_id: str, images: List[str]) -> Dict[str, Any]:
+    """调用指定的多模态模型做 OCR + 结构化。
+
+    Args:
+        client: OpenAI 客户端
+        model_id: 模型 ID（如 Qwen/Qwen3-VL-32B-Instruct）
+        images: base64 编码的图片列表
+
+    Returns:
+        解析后的结构化 dict（可能为空 dict 表示解析失败）
+    """
     content: List[Dict[str, Any]] = [{"type": "text", "text": _OCR_PROMPT}]
     for img_b64 in images[:10]:
         content.append({
@@ -196,13 +224,76 @@ def _ocr_structured(client, images: List[str]) -> Dict[str, Any]:
             "image_url": {"url": f"data:image/png;base64,{img_b64}"},
         })
     resp = client.chat.completions.create(
-        model=cfg.LLM_MODEL,
+        model=model_id,
         messages=[{"role": "user", "content": content}],
         temperature=0.1,
-        max_tokens=2000,
+        max_tokens=4000,  # 提高 token 上限，避免长笔记被截断
+        timeout=120,  # 长笔记 OCR 可能较慢
     )
     raw = resp.choices[0].message.content or ""
     return _parse_structured(raw)
+
+
+def _ocr_structured(client, images: List[str], model_id: Optional[str] = None) -> tuple[Dict[str, Any], Optional[str]]:
+    """OCR + 结构化，支持指定模型与 fallback。
+
+    Args:
+        client: OpenAI 客户端
+        images: base64 图片列表
+        model_id: 指定使用的模型 id（settings_store 中的 id）。
+                  None 表示用 primary，失败时 fallback。
+
+    Returns:
+        (structured_dict, used_model_id)
+        - structured_dict 解析失败时为空 dict
+        - used_model_id 实际成功调用的模型 id（settings_store 里的 id），
+          失败时为 None
+    """
+    if model_id:
+        # 指定模型：只试这一个
+        m = settings_store.get_ocr_model_by_id(model_id)
+        if not m:
+            logger.warning("指定的 OCR 模型 %s 不存在", model_id)
+            return {}, None
+        try:
+            result = _call_vision_model(client, m["model"], images)
+            if result:
+                return result, m["id"]
+            logger.warning("模型 %s 返回内容无法解析", m["model"])
+            return {}, None
+        except Exception as e:
+            logger.warning("模型 %s (%s) 调用失败: %s", m.get("name"), m["model"], e)
+            return {}, None
+
+    # 未指定模型：按 enabled 顺序尝试，primary 在前
+    candidates = settings_store.get_enabled_ocr_models()
+    if not candidates:
+        # 回退到 env 默认
+        cfg = get_config()
+        try:
+            result = _call_vision_model(client, cfg.LLM_MODEL, images)
+            return result, None
+        except Exception as e:
+            logger.warning("默认模型 %s 调用失败: %s", cfg.LLM_MODEL, e)
+            return {}, None
+
+    last_err: Optional[Exception] = None
+    for m in candidates:
+        try:
+            logger.info("尝试 OCR 模型: %s (%s)", m.get("name"), m["model"])
+            result = _call_vision_model(client, m["model"], images)
+            if result:
+                logger.info("OCR 成功，使用模型: %s", m["model"])
+                return result, m["id"]
+            logger.warning("模型 %s 返回内容无法解析，尝试下一个", m["model"])
+        except Exception as e:
+            last_err = e
+            logger.warning("模型 %s (%s) 失败，尝试下一个: %s",
+                           m.get("name"), m["model"], e)
+            continue
+    if last_err:
+        logger.error("所有 OCR 模型均失败，最后错误: %s", last_err)
+    return {}, None
 
 
 def _embed_text(client, text: str) -> List[float]:
@@ -243,20 +334,28 @@ def _demo_embedding(seed: int = 42) -> List[float]:
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
-def process_note(note_id: int) -> None:
+def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
     """处理单条笔记的完整 OCR + 结构化 + embedding + 图谱重算流程。
+
+    Args:
+        note_id: 笔记 id
+        model_id: 指定使用哪个 OCR 模型（settings_store 中的 id）。
+                  None 表示用 primary 模型，失败时 fallback。
+
+    Returns:
+        True 表示处理成功，False 表示失败。
 
     任何异常都把状态置为 'failed' 并记录日志，不向上抛出（用于后台 worker）。
     """
     note = database.get_note(note_id)
     if not note:
         logger.warning("process_note: 笔记 %s 不存在", note_id)
-        return
+        return False
     file_path = note["file_path"]
     if not os.path.exists(file_path):
         logger.error("文件不存在: %s", file_path)
         database.update_note_status(note_id, "failed")
-        return
+        return False
 
     database.update_note_status(note_id, "processing")
     client = _get_client()
@@ -267,14 +366,15 @@ def process_note(note_id: int) -> None:
         if not images:
             raise RuntimeError("未能从文件提取到任何图像")
 
+        used_model_id: Optional[str] = None
         if is_demo:
             logger.info("[demo] 处理笔记 %s (%s)", note_id, file_path)
             structured = _demo_structured(file_path)
             embedding = _demo_embedding(seed=note_id)
         else:
-            structured = _ocr_structured(client, images)
+            structured, used_model_id = _ocr_structured(client, images, model_id=model_id)
             if not structured:
-                raise RuntimeError("LLM 返回内容无法解析为 JSON")
+                raise RuntimeError("LLM 返回内容无法解析为 JSON（所有候选模型均失败）")
             embed_input = (
                 (structured.get("title") or "")
                 + "\n"
@@ -299,6 +399,7 @@ def process_note(note_id: int) -> None:
             embedding=embedding,
             thumbnail_path=thumb_path if os.path.exists(thumb_path) else None,
             status="done",
+            ocr_model=used_model_id,
         )
 
         # 重算候选链接
@@ -307,8 +408,10 @@ def process_note(note_id: int) -> None:
         except Exception as ge:
             logger.warning("链接重算失败 note %s: %s", note_id, ge)
 
-        logger.info("笔记 %s 处理完成 (demo=%s)", note_id, is_demo)
+        logger.info("笔记 %s 处理完成 (demo=%s, model=%s)", note_id, is_demo, used_model_id)
+        return True
 
     except Exception as e:
         logger.exception("笔记 %s 处理失败: %s", note_id, e)
         database.update_note_status(note_id, "failed")
+        return False

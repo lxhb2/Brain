@@ -16,6 +16,7 @@ export interface Note {
   embedding: number[] | null
   thumbnail_path: string | null
   file_hash: string | null
+  ocr_model: string | null
   created_at: string
   processed_at: string | null
 }
@@ -109,6 +110,14 @@ export interface ModelConfig {
   openai_api_key_set: boolean
 }
 
+export interface OcrModel {
+  id: string
+  name: string
+  model: string
+  enabled: boolean
+  is_primary: boolean
+}
+
 export interface RelayConfig {
   location: 'local' | 'cloud'
   host: string
@@ -126,6 +135,7 @@ export interface LinkParams {
 export interface AllSettings {
   watch_folders: WatchFolder[]
   model: ModelConfig
+  ocr_models: OcrModel[]
   relay: RelayConfig
   link_params: LinkParams
   ui: { theme: string; device_override: string }
@@ -318,6 +328,26 @@ export const api = {
   vacuumDb: () => postJSON<{ vacuumed: boolean; before_bytes: number; after_bytes: number }>('/api/system/vacuum', {}),
   reprocessAll: () => postJSON<{ reprocessed: boolean; count: number }>('/api/system/reprocess-all', {}),
   getSources: () => getJSON<{ sources: SourceStat[] }>('/api/system/sources'),
+
+  // —— OCR 模型管理 ——
+  listOcrModels: () => getJSON<{ models: OcrModel[] }>('/api/ocr-models'),
+  addOcrModel: (body: { name: string; model: string; enabled?: boolean; is_primary?: boolean }) =>
+    postJSON<{ model: OcrModel; models: OcrModel[] }>('/api/ocr-models', body),
+  patchOcrModel: (id: string, body: Partial<OcrModel>) =>
+    patchJSON<{ model: OcrModel; models: OcrModel[] }>(`/api/ocr-models/${id}`, body),
+  deleteOcrModel: (id: string) => deleteJSON<{ deleted: boolean; models: OcrModel[] }>(`/api/ocr-models/${id}`),
+
+  // —— 用指定模型重新 OCR ——
+  reocrNote: (note_id: number, model_id?: string) =>
+    postJSON<{
+      note_id: number
+      status: string
+      ocr_model: string | null
+      title: string | null
+      ocr_text: string | null
+      summary: string | null
+      keywords: string[] | null
+    }>(`/api/notes/${note_id}/reocr`, { model_id: model_id ?? null }),
 
   // —— 笔记上传 ——
   uploadNotes: async (files: File[], device?: string, app?: string) => {

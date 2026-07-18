@@ -71,7 +71,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/png,image/jpeg,application/pdf"
+        accept="image/png,image/jpeg,application/pdf,.pdf"
         multiple
         className="hidden"
         onChange={(e) => handleFiles(e.target.files)}
@@ -185,8 +185,8 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
                 >
                   <ImagePlus className="h-5 w-5 text-azure" strokeWidth={1.5} />
                   <div>
-                    <div className="text-sm text-starlight">从相册选择</div>
-                    <div className="font-mono text-[10px] text-dust">选择已有的笔记图片（PNG/JPG/PDF）</div>
+                    <div className="text-sm text-starlight">选择文件</div>
+                    <div className="font-mono text-[10px] text-dust">支持图片（PNG/JPG）和 PDF 文档</div>
                   </div>
                 </button>
                 <div className="pt-2 text-center font-mono text-[10px] text-dust/70">

@@ -17,14 +17,17 @@ import {
   Zap,
   AlertTriangle,
   ChevronRight,
+  Plus,
+  Star,
+  Camera,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { api, type AllSettings, type WatchFolder, type DiscoveredFolder, type SystemInfo, type SourceStat } from '@/api/client'
+import { api, type AllSettings, type WatchFolder, type DiscoveredFolder, type SystemInfo, type SourceStat, type OcrModel } from '@/api/client'
 import { useDeviceDetect } from '@/hooks/useDeviceDetect'
 import { useAppStore } from '@/store'
 import { cn, formatBytes } from '@/lib/utils'
 
-type Tab = 'folders' | 'model' | 'relay' | 'system'
+type Tab = 'folders' | 'model' | 'ocr' | 'relay' | 'system'
 
 export default function Settings() {
   const [tab, setTab] = useState<Tab>('folders')
@@ -79,6 +82,7 @@ export default function Settings() {
         {([
           ['folders', '监听文件夹'],
           ['model', '模型配置'],
+          ['ocr', 'OCR 模型'],
           ['relay', '中继器位置'],
           ['system', '系统维护'],
         ] as [Tab, string][]).map(([t, label]) => (
@@ -107,6 +111,7 @@ export default function Settings() {
           <>
             {tab === 'folders' && <FoldersTab settings={settings} onChange={load} onFlash={flash} />}
             {tab === 'model' && <ModelTab settings={settings} onSave={savePartial} saving={saving} />}
+            {tab === 'ocr' && <OcrModelsTab settings={settings} onChange={load} onFlash={flash} />}
             {tab === 'relay' && <RelayTab settings={settings} onSave={savePartial} saving={saving} />}
             {tab === 'system' && <SystemTab device={device} onFlash={flash} />}
           </>
@@ -493,6 +498,262 @@ function LinkParamsEditor({
         {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
         应用链接参数
       </button>
+    </div>
+  )
+}
+
+// ===========================================================================
+// OCR 模型管理（多模型配置 + primary + 启停）
+// ===========================================================================
+function OcrModelsTab({
+  settings,
+  onChange,
+  onFlash,
+}: {
+  settings: AllSettings
+  onChange: () => void
+  onFlash: (m: string) => void
+}) {
+  const models = settings.ocr_models ?? []
+  const [newName, setNewName] = useState('')
+  const [newModel, setNewModel] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [busyId, setBusyId] = useState<string | null>(null)
+
+  const addModel = async () => {
+    if (!newName.trim() || !newModel.trim()) {
+      onFlash('请填写名称和模型 ID')
+      return
+    }
+    setAdding(true)
+    try {
+      await api.addOcrModel({ name: newName.trim(), model: newModel.trim() })
+      setNewName('')
+      setNewModel('')
+      onChange()
+      onFlash('已添加 OCR 模型')
+    } catch (e) {
+      onFlash('添加失败：' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const setPrimary = async (m: OcrModel) => {
+    setBusyId(m.id)
+    try {
+      await api.patchOcrModel(m.id, { is_primary: true })
+      onChange()
+      onFlash(`已设为主模型：${m.name}`)
+    } catch (e) {
+      onFlash('设置失败：' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const toggleEnabled = async (m: OcrModel) => {
+    setBusyId(m.id)
+    try {
+      await api.patchOcrModel(m.id, { enabled: !m.enabled })
+      onChange()
+    } catch (e) {
+      onFlash('切换失败：' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const remove = async (m: OcrModel) => {
+    if (models.length <= 1) {
+      onFlash('至少保留一个 OCR 模型')
+      return
+    }
+    if (!confirm(`确定删除「${m.name}」？`)) return
+    setBusyId(m.id)
+    try {
+      await api.deleteOcrModel(m.id)
+      onChange()
+      onFlash('已删除')
+    } catch (e) {
+      onFlash('删除失败：' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const updateName = async (m: OcrModel, name: string) => {
+    if (!name.trim() || name === m.name) return
+    setBusyId(m.id)
+    try {
+      await api.patchOcrModel(m.id, { name: name.trim() })
+      onChange()
+    } catch (e) {
+      onFlash('更新失败：' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const updateModel = async (m: OcrModel, model: string) => {
+    if (!model.trim() || model === m.model) return
+    setBusyId(m.id)
+    try {
+      await api.patchOcrModel(m.id, { model: model.trim() })
+      onChange()
+    } catch (e) {
+      onFlash('更新失败：' + (e instanceof Error ? e.message : ''))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      {/* 说明 */}
+      <div className="glass-panel rounded-xl p-4">
+        <div className="mb-2 flex items-center gap-2 text-dust">
+          <Camera className="h-4 w-4" strokeWidth={1.5} />
+          <span className="text-sm">多模型 OCR</span>
+        </div>
+        <p className="text-xs leading-relaxed text-dust">
+          配置多个 OCR 模型，新笔记自动用<b className="text-flux">主模型</b>识别；
+          失败时按启用顺序自动 <b className="text-flux">fallback</b> 到下一个。
+          所有模型共用上方「模型配置」中的 OpenAI 端点和 API Key。
+          笔记详情页可用任意模型<i>重新 OCR</i> 对比效果。
+        </p>
+        <div className="mt-3 grid grid-cols-1 gap-1.5 text-[11px] text-dust/80 sm:grid-cols-2">
+          <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+            <div className="font-mono text-[10px] text-dust/60">硅基流动 · 推荐</div>
+            <div className="mt-0.5 text-flux">Qwen/Qwen3-VL-32B-Instruct</div>
+          </div>
+          <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+            <div className="font-mono text-[10px] text-dust/60">硅基流动 · 推荐</div>
+            <div className="mt-0.5 text-flux">Qwen/Qwen2.5-VL-32B-Instruct</div>
+          </div>
+          <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+            <div className="font-mono text-[10px] text-dust/60">硅基流动 · Kimi</div>
+            <div className="mt-0.5 text-flux">moonshot/kimi-2.6-vl</div>
+          </div>
+          <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+            <div className="font-mono text-[10px] text-dust/60">硅基流动 · 豆包</div>
+            <div className="mt-0.5 text-flux">doubao-vl-pro</div>
+          </div>
+        </div>
+        <p className="mt-2 text-[10px] text-dust/60">
+          具体可用模型名请到硅基流动控制台查看，不同账号开通的模型可能不同。
+        </p>
+      </div>
+
+      {/* 已配置模型列表 */}
+      <div className="glass-panel rounded-xl p-4">
+        <div className="mb-3 flex items-center justify-between text-dust">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">已配置 OCR 模型 ({models.length})</span>
+          </div>
+          <span className="font-mono text-[10px] text-dust/60">点击 ⭐ 设为主模型</span>
+        </div>
+        <div className="space-y-2">
+          {models.map((m) => (
+            <div
+              key={m.id}
+              className={cn(
+                'rounded-xl border p-3 transition-all',
+                m.is_primary
+                  ? 'border-flux/40 bg-flux/5 shadow-[0_0_0_1px_rgba(34,211,238,0.15)]'
+                  : 'border-white/5 bg-white/[0.02]',
+                !m.enabled && 'opacity-50',
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPrimary(m)}
+                  disabled={busyId === m.id || m.is_primary}
+                  title={m.is_primary ? '当前主模型' : '设为主模型'}
+                  className="shrink-0 p-1"
+                >
+                  <Star
+                    className={cn('h-4 w-4', m.is_primary ? 'fill-flux text-flux' : 'text-dust hover:text-flux')}
+                    strokeWidth={1.5}
+                  />
+                </button>
+                <input
+                  defaultValue={m.name}
+                  onBlur={(e) => updateName(m, e.target.value)}
+                  className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-sm text-starlight hover:border-white/10 focus:border-flux/40 focus:outline-none"
+                  placeholder="模型名称"
+                />
+                {m.is_primary && (
+                  <span className="chip text-[9px] text-flux">主</span>
+                )}
+                <button
+                  onClick={() => toggleEnabled(m)}
+                  disabled={busyId === m.id}
+                  title={m.enabled ? '停用' : '启用'}
+                  className="btn-ghost shrink-0 p-1.5"
+                >
+                  <Power className={cn('h-3.5 w-3.5', m.enabled ? 'text-flux' : 'text-dust')} />
+                </button>
+                <button
+                  onClick={() => remove(m)}
+                  disabled={busyId === m.id || models.length <= 1}
+                  title="删除"
+                  className="btn-ghost shrink-0 p-1.5 text-rose/70 hover:text-rose"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <input
+                defaultValue={m.model}
+                onBlur={(e) => updateModel(m, e.target.value)}
+                className="mt-2 w-full rounded-md border border-white/10 bg-void-500/40 px-2 py-1.5 font-mono text-[11px] text-flux/90 focus:border-flux/40 focus:outline-none"
+                placeholder="模型 ID，如 Qwen/Qwen3-VL-32B-Instruct"
+              />
+            </div>
+          ))}
+          {models.length === 0 && (
+            <div className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center text-sm text-dust/50">
+              暂无 OCR 模型，使用下方表单添加
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 添加新模型 */}
+      <div className="glass-panel rounded-xl p-4">
+        <div className="mb-3 flex items-center gap-2 text-dust">
+          <Plus className="h-4 w-4" strokeWidth={1.5} />
+          <span className="text-sm">添加新 OCR 模型</span>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">名称（自定义）</label>
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="如 Kimi 2.6 / 豆包 VL"
+              className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">模型 ID</label>
+            <input
+              value={newModel}
+              onChange={(e) => setNewModel(e.target.value)}
+              placeholder="如 moonshot/kimi-2.6-vl"
+              className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
+            />
+          </div>
+        </div>
+        <button
+          onClick={addModel}
+          disabled={adding || !newName.trim() || !newModel.trim()}
+          className="btn-ghost mt-3 w-full justify-center"
+        >
+          {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          添加模型
+        </button>
+      </div>
     </div>
   )
 }

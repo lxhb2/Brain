@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 import threading
@@ -17,6 +18,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from config import get_config
+
+logger = logging.getLogger("brain.database")
 
 # 全局写锁，保护 SQLite 并发写
 _db_lock = threading.RLock()
@@ -128,6 +131,14 @@ def init_db() -> None:
             """
         )
 
+        # —— 兼容性迁移：给 notes 表添加 ocr_model 字段（记录用了哪个模型 OCR）——
+        # 旧库不存在该列时通过 ALTER TABLE 添加；新库在 CREATE TABLE 已包含则跳过
+        try:
+            c.execute("SELECT ocr_model FROM notes LIMIT 0;")
+        except sqlite3.OperationalError:
+            logger.info("迁移：为 notes 表添加 ocr_model 列")
+            c.execute("ALTER TABLE notes ADD COLUMN ocr_model TEXT;")
+
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -220,28 +231,58 @@ def update_note_content(
     embedding: Sequence[float],
     thumbnail_path: Optional[str] = None,
     status: str = "done",
+    ocr_model: Optional[str] = None,
 ) -> None:
-    """写入 OCR/结构化结果，并把状态置为 done。"""
+    """写入 OCR/结构化结果，并把状态置为 done。
+
+    Args:
+        ocr_model: 使用的 OCR 模型 id（settings_store 里的 id），用于追溯
+    """
     with _db_lock, get_conn() as conn:
-        conn.execute(
-            """
-            UPDATE notes
-            SET title = ?, ocr_text = ?, summary = ?, keywords = ?,
-                embedding = ?, thumbnail_path = ?, status = ?, processed_at = ?
-            WHERE id = ?;
-            """,
-            (
-                title,
-                ocr_text,
-                summary,
-                json.dumps(keywords, ensure_ascii=False),
-                json.dumps(list(embedding)),
-                thumbnail_path,
-                status,
-                _now(),
-                note_id,
-            ),
-        )
+        # 检查 ocr_model 列是否存在（兼容旧库未迁移的场景）
+        try:
+            conn.execute(
+                """
+                UPDATE notes
+                SET title = ?, ocr_text = ?, summary = ?, keywords = ?,
+                    embedding = ?, thumbnail_path = ?, status = ?, processed_at = ?,
+                    ocr_model = ?
+                WHERE id = ?;
+                """,
+                (
+                    title,
+                    ocr_text,
+                    summary,
+                    json.dumps(keywords, ensure_ascii=False),
+                    json.dumps(list(embedding)),
+                    thumbnail_path,
+                    status,
+                    _now(),
+                    ocr_model,
+                    note_id,
+                ),
+            )
+        except sqlite3.OperationalError:
+            # 旧库没有 ocr_model 列，回退到不带该列的更新
+            conn.execute(
+                """
+                UPDATE notes
+                SET title = ?, ocr_text = ?, summary = ?, keywords = ?,
+                    embedding = ?, thumbnail_path = ?, status = ?, processed_at = ?
+                WHERE id = ?;
+                """,
+                (
+                    title,
+                    ocr_text,
+                    summary,
+                    json.dumps(keywords, ensure_ascii=False),
+                    json.dumps(list(embedding)),
+                    thumbnail_path,
+                    status,
+                    _now(),
+                    note_id,
+                ),
+            )
 
 
 def get_note(note_id: int) -> Optional[Dict[str, Any]]:

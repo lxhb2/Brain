@@ -8,6 +8,8 @@ env 变量仅作为「首次启动的默认种子」。
   - watch_folders: 监听文件夹列表 [{id, path, device, app, enabled, recursive}]
   - model:         模型配置 {llm_model, embedding_model, openai_api_key_masked,
                             openai_base_url, embedding_dim}
+  - ocr_models:    OCR 模型列表 [{id, name, model, enabled, is_primary}]
+                    多模型配置，共用 OPENAI_BASE_URL/OPENAI_API_KEY
   - relay:         中继器位置 {location: local|cloud, host, port, note}
   - link_params:   链接权重 {alpha, beta, gamma, threshold}
   - ui:            前端偏好 {theme, device_override}
@@ -142,6 +144,25 @@ def _seed_relay() -> Dict[str, Any]:
     }
 
 
+def _seed_ocr_models() -> List[Dict[str, Any]]:
+    """根据 config.LLM_MODEL 生成默认 OCR 模型列表。
+
+    所有模型共用 OPENAI_BASE_URL 和 OPENAI_API_KEY，
+    这里只保存 model id（如 Qwen/Qwen3-VL-32B-Instruct）。
+    用户可在前端设置页添加更多模型（如 Kimi 2.6、豆包 VL）。
+    """
+    cfg = get_config()
+    return [
+        {
+            "id": "default",
+            "name": "默认模型",
+            "model": cfg.LLM_MODEL,
+            "enabled": True,
+            "is_primary": True,
+        }
+    ]
+
+
 def _seed_link_params() -> Dict[str, Any]:
     cfg = get_config()
     return {
@@ -196,6 +217,84 @@ def set_relay_config(relay: Dict[str, Any]) -> None:
     _set_raw("relay", cur)
 
 
+def get_ocr_models() -> List[Dict[str, Any]]:
+    """返回 OCR 模型列表。
+
+    保证至少有一个 is_primary=True 的 enabled 模型；
+    若用户禁用全部，回退到 default 模型。
+    """
+    val = _get_raw("ocr_models")
+    if val is None:
+        val = _seed_ocr_models()
+        _set_raw("ocr_models", val)
+    return val  # type: ignore[return-value]
+
+
+def set_ocr_models(models: List[Dict[str, Any]]) -> None:
+    """更新 OCR 模型列表。
+
+    保证唯一 is_primary：若多个声明为 primary，只保留第一个；
+    若没有 primary，把第一个 enabled 的置为 primary。
+    """
+    cleaned = []
+    primary_set = False
+    for m in models:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("id") or uuid.uuid4().hex[:10]
+        name = (m.get("name") or "未命名模型").strip()
+        model_id = (m.get("model") or "").strip()
+        if not model_id:
+            continue  # 没填 model id 的丢弃
+        enabled = bool(m.get("enabled", True))
+        is_primary = bool(m.get("is_primary", False)) and enabled
+        if is_primary and primary_set:
+            is_primary = False
+        if is_primary:
+            primary_set = True
+        cleaned.append({
+            "id": mid,
+            "name": name,
+            "model": model_id,
+            "enabled": enabled,
+            "is_primary": is_primary,
+        })
+    # 没有 primary 就把第一个 enabled 的置为 primary
+    if not primary_set:
+        for m in cleaned:
+            if m["enabled"]:
+                m["is_primary"] = True
+                break
+    _set_raw("ocr_models", cleaned)
+
+
+def get_primary_ocr_model() -> Optional[Dict[str, Any]]:
+    """返回当前 primary OCR 模型（dict），无则 None。"""
+    for m in get_ocr_models():
+        if m.get("is_primary") and m.get("enabled"):
+            return m
+    # 全部禁用时回退第一个
+    models = get_ocr_models()
+    return models[0] if models else None
+
+
+def get_enabled_ocr_models() -> List[Dict[str, Any]]:
+    """返回所有 enabled 的 OCR 模型，primary 在前。"""
+    models = get_ocr_models()
+    enabled = [m for m in models if m.get("enabled")]
+    # primary 排第一
+    enabled.sort(key=lambda m: 0 if m.get("is_primary") else 1)
+    return enabled
+
+
+def get_ocr_model_by_id(model_id: str) -> Optional[Dict[str, Any]]:
+    """按 id 查找 OCR 模型。"""
+    for m in get_ocr_models():
+        if m.get("id") == model_id:
+            return m
+    return None
+
+
 def get_link_params() -> Dict[str, Any]:
     val = _get_raw("link_params")
     if val is None:
@@ -229,6 +328,7 @@ def get_all_settings() -> Dict[str, Any]:
     return {
         "watch_folders": get_watch_folders(),
         "model": get_model_config(),
+        "ocr_models": get_ocr_models(),
         "relay": get_relay_config(),
         "link_params": get_link_params(),
         "ui": get_ui_prefs(),

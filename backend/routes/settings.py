@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -40,6 +41,7 @@ def get_settings() -> Dict[str, Any]:
 class SettingsUpdate(BaseModel):
     watch_folders: Optional[List[Dict[str, Any]]] = None
     model: Optional[Dict[str, Any]] = None
+    ocr_models: Optional[List[Dict[str, Any]]] = None
     relay: Optional[Dict[str, Any]] = None
     link_params: Optional[Dict[str, Any]] = None
     ui: Optional[Dict[str, Any]] = None
@@ -50,6 +52,8 @@ def update_settings(body: SettingsUpdate) -> Dict[str, Any]:
     """批量更新设置（仅更新提供的字段）。"""
     if body.model is not None:
         settings_store.set_model_config(body.model)
+    if body.ocr_models is not None:
+        settings_store.set_ocr_models(body.ocr_models)
     if body.relay is not None:
         settings_store.set_relay_config(body.relay)
     if body.link_params is not None:
@@ -64,6 +68,76 @@ def update_settings(body: SettingsUpdate) -> Dict[str, Any]:
         except Exception:
             pass
     return settings_store.get_all_settings()
+
+
+# ---------------------------------------------------------------------------
+# OCR 模型管理（独立接口，便于前端单独操作）
+# ---------------------------------------------------------------------------
+class OcrModelItem(BaseModel):
+    id: Optional[str] = None
+    name: str
+    model: str
+    enabled: bool = True
+    is_primary: bool = False
+
+
+@router.get("/ocr-models")
+def list_ocr_models() -> Dict[str, Any]:
+    """列出所有 OCR 模型配置。"""
+    return {"models": settings_store.get_ocr_models()}
+
+
+@router.post("/ocr-models")
+def add_ocr_model(body: OcrModelItem) -> Dict[str, Any]:
+    """新增一个 OCR 模型。"""
+    models = settings_store.get_ocr_models()
+    new_item = {
+        "id": body.id or uuid.uuid4().hex[:10],
+        "name": body.name,
+        "model": body.model,
+        "enabled": body.enabled,
+        "is_primary": body.is_primary,
+    }
+    models.append(new_item)
+    settings_store.set_ocr_models(models)
+    return {"model": new_item, "models": settings_store.get_ocr_models()}
+
+
+@router.patch("/ocr-models/{model_id}")
+def patch_ocr_model(model_id: str, body: OcrModelItem) -> Dict[str, Any]:
+    """编辑一个 OCR 模型（name/model/enabled/is_primary）。"""
+    models = settings_store.get_ocr_models()
+    found = False
+    for m in models:
+        if m["id"] == model_id:
+            if body.name is not None:
+                m["name"] = body.name
+            if body.model is not None:
+                m["model"] = body.model
+            if body.enabled is not None:
+                m["enabled"] = body.enabled
+            if body.is_primary is not None:
+                m["is_primary"] = body.is_primary
+            found = True
+            break
+    if not found:
+        raise HTTPException(status_code=404, detail="OCR 模型不存在")
+    settings_store.set_ocr_models(models)
+    return {"model": next(m for m in settings_store.get_ocr_models() if m["id"] == model_id),
+            "models": settings_store.get_ocr_models()}
+
+
+@router.delete("/ocr-models/{model_id}")
+def delete_ocr_model(model_id: str) -> Dict[str, Any]:
+    """删除一个 OCR 模型（保证至少保留一个 primary）。"""
+    models = settings_store.get_ocr_models()
+    new_models = [m for m in models if m["id"] != model_id]
+    if len(new_models) == len(models):
+        raise HTTPException(status_code=404, detail="OCR 模型不存在")
+    if not new_models:
+        raise HTTPException(status_code=400, detail="至少保留一个 OCR 模型")
+    settings_store.set_ocr_models(new_models)
+    return {"deleted": True, "models": settings_store.get_ocr_models()}
 
 
 # ---------------------------------------------------------------------------
