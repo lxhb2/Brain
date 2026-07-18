@@ -23,5 +23,6 @@ def health():
         "status": "ok",
         "openai_configured": bool(cfg.OPENAI_API_KEY),
         "llm_model": cfg.LLM_MODEL,
+        "qa_model": cfg.QA_MODEL,
         "embedding_model": cfg.EMBEDDING_MODEL,
     }

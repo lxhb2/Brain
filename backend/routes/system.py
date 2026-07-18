@@ -32,6 +32,7 @@ def health() -> Dict[str, Any]:
         "status": "ok",
         "openai_configured": bool(cfg.OPENAI_API_KEY),
         "llm_model": model_cfg.get("llm_model", cfg.LLM_MODEL),
+        "qa_model": model_cfg.get("qa_model", cfg.QA_MODEL),
         "embedding_model": model_cfg.get("embedding_model", cfg.EMBEDDING_MODEL),
     }
 

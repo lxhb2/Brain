@@ -358,11 +358,13 @@ function ModelTab({
   saving: boolean
 }) {
   const [llmModel, setLlmModel] = useState(settings.model.llm_model)
+  const [qaModel, setQaModel] = useState(settings.model.qa_model ?? '')
   const [embeddingModel, setEmbeddingModel] = useState(settings.model.embedding_model)
   const [baseUrl, setBaseUrl] = useState(settings.model.openai_base_url)
 
   useEffect(() => {
     setLlmModel(settings.model.llm_model)
+    setQaModel(settings.model.qa_model ?? '')
     setEmbeddingModel(settings.model.embedding_model)
     setBaseUrl(settings.model.openai_base_url)
   }, [settings.model])
@@ -376,11 +378,20 @@ function ModelTab({
         </div>
         <div className="space-y-3">
           <div>
-            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">视觉 OCR / 对话模型</label>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">视觉 OCR 模型（需支持 image_url）</label>
             <input
               value={llmModel}
               onChange={(e) => setLlmModel(e.target.value)}
-              placeholder="gpt-4o"
+              placeholder="Qwen/Qwen3-VL-32B-Instruct"
+              className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">问答模型（RAG，留空则用上面的 OCR 模型）</label>
+            <input
+              value={qaModel}
+              onChange={(e) => setQaModel(e.target.value)}
+              placeholder="deepseek-ai/DeepSeek-V3.2"
               className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
             />
           </div>
@@ -389,16 +400,16 @@ function ModelTab({
             <input
               value={embeddingModel}
               onChange={(e) => setEmbeddingModel(e.target.value)}
-              placeholder="text-embedding-3-small"
+              placeholder="BAAI/bge-m3"
               className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
             />
           </div>
           <div>
-            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">OpenAI 兼容端点（可选）</label>
+            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">OpenAI 兼容端点</label>
             <input
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.openai.com/v1"
+              placeholder="https://api.siliconflow.cn/v1"
               className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
             />
           </div>
@@ -433,7 +444,7 @@ function ModelTab({
       </div>
 
       <button
-        onClick={() => onSave({ model: { ...settings.model, llm_model: llmModel, embedding_model: embeddingModel, openai_base_url: baseUrl } })}
+        onClick={() => onSave({ model: { ...settings.model, llm_model: llmModel, qa_model: qaModel, embedding_model: embeddingModel, openai_base_url: baseUrl } })}
         disabled={saving}
         className="btn-ghost w-full justify-center"
       >

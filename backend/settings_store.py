@@ -123,6 +123,7 @@ def _seed_model() -> Dict[str, Any]:
     cfg = get_config()
     return {
         "llm_model": cfg.LLM_MODEL,
+        "qa_model": cfg.QA_MODEL,
         "embedding_model": cfg.EMBEDDING_MODEL,
         "embedding_dim": cfg.EMBEDDING_DIM,
         "openai_base_url": cfg.OPENAI_BASE_URL or "",

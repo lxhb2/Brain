@@ -102,6 +102,7 @@ export interface WatchFolder {
 
 export interface ModelConfig {
   llm_model: string
+  qa_model: string
   embedding_model: string
   embedding_dim: number
   openai_base_url: string

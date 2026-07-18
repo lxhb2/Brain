@@ -109,7 +109,7 @@ def ask(question: str) -> Dict[str, Any]:
         context = _build_context(hits)
         user_msg = f"参考笔记：\n{context}\n\n用户问题：{question}"
         resp = client.chat.completions.create(
-            model=cfg.LLM_MODEL,
+            model=cfg.QA_MODEL or cfg.LLM_MODEL,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},

@@ -29,11 +29,16 @@ class Settings(BaseSettings):
     DB_PATH: str = "data/brain.db"
 
     # —— OpenAI / LLM 配置 ——
+    # 默认使用硅基流动（SiliconFlow，OpenAI 兼容端点）
+    # 可在 .env 或运行时设置页切换为 OpenAI / 其他兼容服务
     OPENAI_API_KEY: Optional[str] = None
-    OPENAI_BASE_URL: Optional[str] = None
-    LLM_MODEL: str = "gpt-4o"
-    EMBEDDING_MODEL: str = "text-embedding-3-small"
-    EMBEDDING_DIM: int = 1536  # text-embedding-3-small 默认维度
+    OPENAI_BASE_URL: Optional[str] = "https://api.siliconflow.cn/v1"
+    # 视觉 OCR 模型（需支持 image_url 多模态）
+    LLM_MODEL: str = "Qwen/Qwen3-VL-32B-Instruct"
+    # 纯文本问答模型（RAG 用，便宜快速；为空则回退到 LLM_MODEL）
+    QA_MODEL: str = "deepseek-ai/DeepSeek-V3.2"
+    EMBEDDING_MODEL: str = "BAAI/bge-m3"
+    EMBEDDING_DIM: int = 1024  # bge-m3 默认维度
 
     # —— 链接权重计算参数 ——
     LINK_ALPHA: float = 0.6   # 语义相似度权重
