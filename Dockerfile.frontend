@@ -12,8 +12,8 @@ WORKDIR /app
 # 先拷依赖清单，利用层缓存
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 
-# 安装依赖（--no-frozen-lockfile 容忍 lockfile 与 package.json 的细微差异）
-RUN pnpm install --no-frozen-lockfile --no-audit --no-fund
+# 安装依赖（pnpm 9 不支持 --no-audit/--no-fund）
+RUN pnpm install --no-frozen-lockfile
 
 # 拷源码并构建
 COPY frontend/ ./
