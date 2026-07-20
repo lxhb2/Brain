@@ -437,6 +437,7 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
         True 表示处理成功，False 表示失败。
 
     任何异常都把状态置为 'failed' 并记录日志，不向上抛出（用于后台 worker）。
+    若笔记被人工编辑过（manually_edited=1），跳过 OCR，只重算 embedding 和链接。
     """
     note = database.get_note(note_id)
     if not note:
@@ -447,6 +448,37 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
         logger.error("文件不存在: %s", file_path)
         database.update_note_status(note_id, "failed")
         return False
+
+    # 人工编辑过的笔记：跳过 OCR，只重算 embedding 和链接
+    if note.get("manually_edited"):
+        logger.info("笔记 %s 已被人工编辑，跳过 OCR，仅重算 embedding/链接", note_id)
+        database.update_note_status(note_id, "processing")
+        client = _get_client()
+        try:
+            if client is None:
+                embedding = _demo_embedding(seed=note_id)
+            else:
+                embed_input = (
+                    (note.get("title") or "")
+                    + "\n"
+                    + (note.get("summary") or "")
+                    + "\n"
+                    + (note.get("ocr_text") or "")
+                )
+                embedding = _embed_text(client, embed_input)
+                database.update_note_fields(note_id, embedding=embedding)
+            # 重算链接
+            try:
+                graph_api.recompute_links_for_note(note_id)
+            except Exception as ge:
+                logger.warning("链接重算失败 note %s: %s", note_id, ge)
+            database.update_note_status(note_id, "done")
+            logger.info("笔记 %s 人工编辑版本已重算 embedding (model=manual)", note_id)
+            return True
+        except Exception as e:
+            logger.exception("笔记 %s 人工编辑版本重算失败: %s", note_id, e)
+            database.update_note_status(note_id, "failed")
+            return False
 
     database.update_note_status(note_id, "processing")
     client = _get_client()

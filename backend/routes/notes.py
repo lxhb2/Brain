@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -92,6 +92,99 @@ def reprocess_note(note_id: int):
     database.update_note_status(note_id, "pending")
     scheduler.enqueue_note(note_id)
     return {"note_id": note_id, "status": "pending", "queued": True}
+
+
+class EditNoteRequest(BaseModel):
+    """人工编辑笔记字段。所有字段可选，只更新传入的。"""
+    title: Optional[str] = None
+    ocr_text: Optional[str] = None
+    summary: Optional[str] = None
+    keywords: Optional[List[str]] = None
+    recompute_embedding: bool = True  # 是否同步重算 embedding 和链接
+
+
+@router.patch("/{note_id}")
+def edit_note(note_id: int, body: EditNoteRequest):
+    """人工编辑笔记的 OCR 文本/标题/摘要/关键词。
+
+    - 标记 manually_edited=1，后续重新 OCR 不会覆盖人工修改
+    - 默认重算 embedding 和候选链接（保持图谱同步）
+    - 若不需要重算（例如只改 typo），传 recompute_embedding=False
+    """
+    note = database.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+
+    # 收集要更新的字段
+    updates = {}
+    if body.title is not None:
+        updates["title"] = body.title.strip()
+    if body.ocr_text is not None:
+        updates["ocr_text"] = body.ocr_text
+    if body.summary is not None:
+        updates["summary"] = body.summary.strip()
+    if body.keywords is not None:
+        updates["keywords"] = [k.strip() for k in body.keywords if k.strip()]
+    updates["manually_edited"] = True
+
+    if not any(k != "manually_edited" for k in updates):
+        raise HTTPException(status_code=400, detail="未提供任何要更新的字段")
+
+    # 写入数据库（先不更新 embedding）
+    database.update_note_fields(
+        note_id,
+        title=updates.get("title"),
+        ocr_text=updates.get("ocr_text"),
+        summary=updates.get("summary"),
+        keywords=updates.get("keywords"),
+        manually_edited=True,
+    )
+
+    # 重算 embedding 和链接
+    embedding_info = {"recomputed": False, "error": None}
+    if body.recompute_embedding:
+        try:
+            client = ocr_processor._get_client()
+            if client is None:
+                embedding_info["error"] = "demo 模式，未重算"
+            else:
+                updated_note = database.get_note(note_id)
+                embed_input = (
+                    (updated_note.get("title") or "")
+                    + "\n"
+                    + (updated_note.get("summary") or "")
+                    + "\n"
+                    + (updated_note.get("ocr_text") or "")
+                )
+                emb = ocr_processor._embed_text(client, embed_input)
+                database.update_note_fields(note_id, embedding=emb)
+                # 重算链接
+                try:
+                    import graph_api
+                    graph_api.recompute_links_for_note(note_id)
+                except Exception as ge:
+                    embedding_info["error"] = f"链接重算失败: {ge}"
+                embedding_info["recomputed"] = True
+        except Exception as e:
+            embedding_info["error"] = str(e)
+
+    return {
+        "note_id": note_id,
+        "updated": True,
+        "manually_edited": True,
+        "embedding": embedding_info,
+        "note": database.get_note(note_id),
+    }
+
+
+@router.post("/{note_id}/clear-manual-edit")
+def clear_manual_edit(note_id: int):
+    """清除人工编辑标记，让笔记可以重新被 OCR 覆盖。"""
+    note = database.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    database.update_note_fields(note_id, manually_edited=False)
+    return {"note_id": note_id, "manually_edited": False}
 
 
 class ReOcrRequest(BaseModel):

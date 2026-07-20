@@ -17,6 +17,7 @@ export interface Note {
   thumbnail_path: string | null
   file_hash: string | null
   ocr_model: string | null
+  manually_edited?: boolean
   created_at: string
   processed_at: string | null
 }
@@ -62,6 +63,24 @@ export interface QaAskResponse {
   answer: string
   citations: Citation[]
   qa_id: number
+  memories_used?: MemoryUsed[]
+}
+
+export interface MemoryUsed {
+  score: number
+  memory: UserMemory
+}
+
+export interface UserMemory {
+  id: number
+  type: 'preference' | 'fact' | 'correction' | 'term'
+  content: string
+  source: string | null
+  weight: number
+  related_qa_id: number | null
+  created_at: string
+  last_used_at: string | null
+  use_count: number
 }
 
 export interface QaHistoryItem {
@@ -277,6 +296,20 @@ export const api = {
       {},
     ),
 
+  // 人工编辑笔记（OCR 修正）
+  editNote: (id: number, body: {
+    title?: string
+    ocr_text?: string
+    summary?: string
+    keywords?: string[]
+    recompute_embedding?: boolean
+  }) => patchJSON<{ note_id: number; updated: boolean; manually_edited: boolean; note: Note }>(
+    `/api/notes/${id}`,
+    body,
+  ),
+  clearManualEdit: (id: number) =>
+    postJSON<{ note_id: number; manually_edited: boolean }>(`/api/notes/${id}/clear-manual-edit`, {}),
+
   // 图谱
   getGraph: (params: { device?: string; app?: string; q?: string; status?: string } = {}) => {
     const qs = new URLSearchParams()
@@ -288,10 +321,27 @@ export const api = {
   getNeighbors: (id: number) => getJSON<GraphData>(`/api/graph/neighbors/${id}`),
 
   // 问答
-  ask: (question: string) =>
-    postJSON<QaAskResponse>('/api/qa/ask', { question }),
-  getQaHistory: (limit = 50, offset = 0) =>
-    getJSON<{ items: QaHistoryItem[] }>(`/api/qa/history?limit=${limit}&offset=${offset}`),
+  ask: (question: string, sessionId?: string) =>
+    postJSON<QaAskResponse>('/api/qa/ask', { question, session_id: sessionId }),
+  getQaHistory: (limit = 50, offset = 0, sessionId?: string) => {
+    const qs = new URLSearchParams()
+    qs.set('limit', String(limit))
+    qs.set('offset', String(offset))
+    if (sessionId) qs.set('session_id', sessionId)
+    return getJSON<{ items: QaHistoryItem[] }>(`/api/qa/history?${qs.toString()}`)
+  },
+
+  // 长期记忆
+  listMemories: (type?: string) => {
+    const qs = new URLSearchParams()
+    if (type) qs.set('type', type)
+    return getJSON<{ items: UserMemory[]; total: number }>(`/api/qa/memories?${qs.toString()}`)
+  },
+  addMemory: (body: { type: UserMemory['type']; content: string; weight?: number }) =>
+    postJSON<{ memory_id: number; memory: UserMemory }>('/api/qa/memories', body),
+  updateMemory: (id: number, body: { content?: string; weight?: number; type?: UserMemory['type'] }) =>
+    patchJSON<{ memory_id: number; memory: UserMemory }>(`/api/qa/memories/${id}`, body),
+  deleteMemory: (id: number) => deleteJSON<{ deleted: boolean; memory_id: number }>(`/api/qa/memories/${id}`),
 
   // 反馈
   submitFeedback: (qa_id: number, rating: 'up' | 'down', correction?: string) =>

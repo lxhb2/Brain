@@ -139,6 +139,45 @@ def init_db() -> None:
             logger.info("迁移：为 notes 表添加 ocr_model 列")
             c.execute("ALTER TABLE notes ADD COLUMN ocr_model TEXT;")
 
+        # —— 兼容性迁移：notes.manually_edited（标记人工编辑过，重新 OCR 时保留人工修改）——
+        try:
+            c.execute("SELECT manually_edited FROM notes LIMIT 0;")
+        except sqlite3.OperationalError:
+            logger.info("迁移：为 notes 表添加 manually_edited 列")
+            c.execute("ALTER TABLE notes ADD COLUMN manually_edited INTEGER DEFAULT 0;")
+
+        # —— 长期记忆表：存用户偏好、关键事实、修正过的知识点 ——
+        # type: 'preference' | 'fact' | 'correction' | 'term'
+        # content: 记忆内容（自然语言）
+        # source: 来源（'feedback' | 'qa' | 'manual'）
+        # weight: 权重 0-1，用于检索时排序
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT,
+                weight REAL DEFAULT 0.5,
+                embedding TEXT,
+                related_qa_id INTEGER,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                use_count INTEGER DEFAULT 0,
+                FOREIGN KEY (related_qa_id) REFERENCES qa_history(id)
+            );
+            """
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_type ON user_memory(type);")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_weight ON user_memory(weight);")
+
+        # —— qa_history 加 session_id（会话分组，用于多轮对话）——
+        try:
+            c.execute("SELECT session_id FROM qa_history LIMIT 0;")
+        except sqlite3.OperationalError:
+            logger.info("迁移：为 qa_history 表添加 session_id 列")
+            c.execute("ALTER TABLE qa_history ADD COLUMN session_id TEXT;")
+
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -219,6 +258,50 @@ def update_note_status(note_id: int, status: str) -> None:
             "UPDATE notes SET status = ? WHERE id = ?;",
             (status, note_id),
         )
+
+
+def update_note_fields(
+    note_id: int,
+    *,
+    title: Optional[str] = None,
+    ocr_text: Optional[str] = None,
+    summary: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
+    embedding: Optional[Sequence[float]] = None,
+    manually_edited: Optional[bool] = None,
+) -> None:
+    """人工编辑笔记字段（部分更新）。
+
+    只更新传入的字段；manually_edited=True 表示人工编辑过，
+    后续重新 OCR 时应保留人工修改（不覆盖）。
+    """
+    sets: List[str] = []
+    params: List[Any] = []
+    if title is not None:
+        sets.append("title = ?")
+        params.append(title)
+    if ocr_text is not None:
+        sets.append("ocr_text = ?")
+        params.append(ocr_text)
+    if summary is not None:
+        sets.append("summary = ?")
+        params.append(summary)
+    if keywords is not None:
+        sets.append("keywords = ?")
+        params.append(json.dumps(keywords, ensure_ascii=False))
+    if embedding is not None:
+        sets.append("embedding = ?")
+        params.append(json.dumps(list(embedding)))
+    if manually_edited is not None:
+        sets.append("manually_edited = ?")
+        params.append(1 if manually_edited else 0)
+    if not sets:
+        return
+    sets.append("processed_at = ?")
+    params.append(_now())
+    params.append(note_id)
+    with _db_lock, get_conn() as conn:
+        conn.execute(f"UPDATE notes SET {', '.join(sets)} WHERE id = ?;", params)
 
 
 def update_note_content(
@@ -528,6 +611,217 @@ def insert_feedback(*, qa_id: int, rating: str, correction: Optional[str] = None
             (qa_id, rating, correction, _now()),
         )
         return int(cur.lastrowid)
+
+
+def list_feedback(limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    """返回反馈列表（用于学习用户偏好）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM feedback ORDER BY created_at DESC LIMIT ? OFFSET ?;",
+            (int(limit), int(offset)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# user_memory CRUD（长期记忆）
+# ---------------------------------------------------------------------------
+def insert_memory(
+    *,
+    type: str,
+    content: str,
+    source: Optional[str] = None,
+    weight: float = 0.5,
+    embedding: Optional[Sequence[float]] = None,
+    related_qa_id: Optional[int] = None,
+) -> int:
+    """新增一条长期记忆。type ∈ {preference, fact, correction, term}。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO user_memory (type, content, source, weight, embedding, related_qa_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                type,
+                content,
+                source,
+                float(weight),
+                json.dumps(list(embedding)) if embedding else None,
+                related_qa_id,
+                _now(),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_memory(
+    *,
+    type: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """列出长期记忆（可按 type 过滤）。按权重降序 + 创建时间降序。"""
+    where = " WHERE type = ?" if type else ""
+    params: List[Any] = [type] if type else []
+    sql = (
+        f"SELECT * FROM user_memory{where}"
+        " ORDER BY weight DESC, created_at DESC LIMIT ? OFFSET ?;"
+    )
+    params.extend([int(limit), int(offset)])
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("embedding"), str):
+                try:
+                    d["embedding"] = json.loads(d["embedding"])
+                except (json.JSONDecodeError, TypeError):
+                    d["embedding"] = None
+            out.append(d)
+        return out
+
+
+def get_memory(memory_id: int) -> Optional[Dict[str, Any]]:
+    """按 id 获取单条记忆。"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM user_memory WHERE id = ?;", (memory_id,)).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        if isinstance(d.get("embedding"), str):
+            try:
+                d["embedding"] = json.loads(d["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                d["embedding"] = None
+        return d
+
+
+def update_memory(
+    memory_id: int,
+    *,
+    content: Optional[str] = None,
+    weight: Optional[float] = None,
+    type: Optional[str] = None,
+) -> None:
+    """更新记忆字段。"""
+    sets: List[str] = []
+    params: List[Any] = []
+    if content is not None:
+        sets.append("content = ?")
+        params.append(content)
+    if weight is not None:
+        sets.append("weight = ?")
+        params.append(float(weight))
+    if type is not None:
+        sets.append("type = ?")
+        params.append(type)
+    if not sets:
+        return
+    params.append(memory_id)
+    with _db_lock, get_conn() as conn:
+        conn.execute(f"UPDATE user_memory SET {', '.join(sets)} WHERE id = ?;", params)
+
+
+def delete_memory(memory_id: int) -> bool:
+    """删除一条记忆。返回是否删除成功。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM user_memory WHERE id = ?;", (memory_id,))
+        return cur.rowcount > 0
+
+
+def search_similar_memory(query_vec: Sequence[float], top_k: int = 5) -> List[Dict[str, Any]]:
+    """在全库记忆中扫描，返回与查询向量最相似的 top_k 记忆（带 score）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_memory WHERE embedding IS NOT NULL ORDER BY weight DESC, created_at DESC LIMIT 500;"
+        ).fetchall()
+    scored: List[Tuple[float, Dict[str, Any]]] = []
+    for r in rows:
+        d = dict(r)
+        emb = None
+        if isinstance(d.get("embedding"), str):
+            try:
+                emb = json.loads(d["embedding"])
+            except (json.JSONDecodeError, TypeError):
+                emb = None
+        if not emb:
+            continue
+        score = cosine_similarity(query_vec, emb)
+        # 用权重做轻微加权（weight 0.5 → 不变；weight 1.0 → ×1.1；weight 0.0 → ×0.9）
+        weighted = score * (0.9 + 0.2 * float(d.get("weight", 0.5)))
+        scored.append((weighted, d))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [{"score": round(s, 4), "memory": d} for s, d in scored[: int(top_k)]]
+
+
+def touch_memory(memory_id: int) -> None:
+    """记忆被引用时更新 use_count 和 last_used_at。"""
+    with _db_lock, get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE user_memory
+            SET use_count = use_count + 1, last_used_at = ?
+            WHERE id = ?;
+            """,
+            (_now(), memory_id),
+        )
+
+
+# ---------------------------------------------------------------------------
+# qa_history 扩展（session_id）
+# ---------------------------------------------------------------------------
+def insert_qa(
+    *,
+    question: str,
+    answer: str,
+    citations: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+) -> int:
+    """记录一次问答，返回 qa_history.id。支持 session_id 会话分组。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO qa_history (question, answer, citations, created_at, session_id)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (question, answer, json.dumps(citations, ensure_ascii=False), _now(), session_id),
+            )
+        except sqlite3.OperationalError:
+            # 旧库没有 session_id 列，回退
+            cur.execute(
+                """
+                INSERT INTO qa_history (question, answer, citations, created_at)
+                VALUES (?, ?, ?, ?);
+                """,
+                (question, answer, json.dumps(citations, ensure_ascii=False), _now()),
+            )
+        return int(cur.lastrowid)
+
+
+def get_qa_history(limit: int = 50, offset: int = 0, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """返回问答历史。可按 session_id 过滤。"""
+    where = " WHERE session_id = ?" if session_id else ""
+    params: List[Any] = [session_id] if session_id else []
+    sql = f"SELECT * FROM qa_history{where} ORDER BY created_at DESC LIMIT ? OFFSET ?;"
+    params.extend([int(limit), int(offset)])
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("citations"), str):
+                try:
+                    d["citations"] = json.loads(d["citations"])
+                except (json.JSONDecodeError, TypeError):
+                    d["citations"] = []
+            out.append(d)
+        return out
 
 
 # ---------------------------------------------------------------------------
