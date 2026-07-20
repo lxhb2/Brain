@@ -1,7 +1,9 @@
 """笔记上传接口。
 
 允许手机/平板通过 HTTP 直接上传手写笔记图片（拍照或选文件），
-无需 Syncthing。上传后由 watcher 自动检测并 OCR 入库。
+无需 Syncthing。上传后主动入库并入队 OCR 处理（不依赖 watcher，
+因为上传目录是动态生成的 <device>-<app>/<yyyymmdd>/，可能不在
+watcher 监听列表里）。
 """
 from __future__ import annotations
 
@@ -14,6 +16,9 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 
+import database
+import ocr_processor
+import scheduler
 from config import get_config
 
 logger = logging.getLogger("brain.routes.upload")
@@ -109,15 +114,46 @@ async def upload_note(
         try:
             with open(save_path, "wb") as fp:
                 fp.write(content)
+            # 主动入库 + 入队，不依赖 watcher
+            enqueue_status = "queued"
+            enqueue_err = ""
+            note_id = None
+            try:
+                file_hash = ocr_processor.compute_file_hash(save_path)
+                # 去重：已存在则复用，否则插入新记录
+                existing = database.get_note_by_path(save_path)
+                if existing:
+                    note_id = existing["id"]
+                    if existing.get("status") not in ("done", "processing"):
+                        scheduler.enqueue_note(note_id)
+                else:
+                    note_id = database.insert_note(
+                        file_path=save_path,
+                        file_hash=file_hash,
+                        source_device=device,
+                        source_app=app,
+                        status="pending",
+                    )
+                    if note_id:
+                        scheduler.enqueue_note(note_id)
+            except Exception as e:
+                enqueue_status = "saved_but_not_queued"
+                enqueue_err = str(e)
+                logger.exception("上传后入队失败: %s", save_path)
+
             saved_files.append({
                 "filename": original_name,
                 "saved_as": safe_name,
                 "path": save_path,
                 "size_bytes": len(content),
                 "success": True,
+                "note_id": note_id,
+                "enqueue": enqueue_status,
+                "enqueue_error": enqueue_err or None,
             })
-            logger.info("上传成功: %s -> %s (%.1fKB)",
-                        original_name, save_path, len(content) / 1024)
+            logger.info("上传成功: %s -> %s (%.1fKB, note_id=%s, %s)",
+                        original_name, save_path, len(content) / 1024,
+                        note_id, enqueue_status)
         except Exception as e:
             saved_files.append({
                 "filename": original_name,
@@ -135,5 +171,5 @@ async def upload_note(
         "success": success_count,
         "failed": len(files) - success_count,
         "files": saved_files,
-        "message": f"上传完成：{success_count}/{len(files)} 个文件成功，watcher 将自动处理",
+        "message": f"上传完成：{success_count}/{len(files)} 个文件成功，已入队 OCR 处理",
     }
