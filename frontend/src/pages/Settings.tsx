@@ -645,6 +645,9 @@ function OcrModelsTab({
         </p>
       </div>
 
+      {/* 百度智能云 OCR 配置 */}
+      <BaiduOcrPanel onFlash={onFlash} />
+
       {/* 已配置模型列表 */}
       <div className="glass-panel rounded-xl p-4">
         <div className="mb-3 flex items-center justify-between text-dust">
@@ -753,6 +756,123 @@ function OcrModelsTab({
           {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
           添加模型
         </button>
+      </div>
+    </div>
+  )
+}
+
+// ===========================================================================
+// 百度智能云 OCR 配置面板
+// ===========================================================================
+function BaiduOcrPanel({ onFlash }: { onFlash: (msg: string) => void }) {
+  const [apiKey, setApiKey] = useState('')
+  const [secretKey, setSecretKey] = useState('')
+  const [enabled, setEnabled] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+
+  // 从后端拉当前配置
+  useEffect(() => {
+    api.getSystemInfo().then((info) => {
+      // systemInfo 不直接含百度配置，从 /api/ocr-models 间接判断 baidu 是否存在
+      api.listOcrModels().then((res) => {
+        const baidu = res.models.find((m) => m.id === 'baidu')
+        setEnabled(!!baidu?.enabled)
+        setLoading(false)
+      })
+    }).catch(() => setLoading(false))
+  }, [])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      // 百度凭证通过 .env 配置，前端只能提示用户改 .env
+      // 这里只更新 enabled 状态（通过 ocr-models 接口）
+      onFlash('百度 OCR 凭证需在 .env 中配置（BAIDU_OCR_API_KEY / BAIDU_OCR_SECRET_KEY）')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const testBaidu = async () => {
+    setTesting(true)
+    try {
+      const res = await fetch('/api/ocr-models/baidu/test', { method: 'POST' })
+      const data = await res.json()
+      if (data.ok) {
+        onFlash(`百度 OCR 连通正常，识别到 ${data.chars} 字符`)
+      } else {
+        onFlash(`百度 OCR 测试失败：${data.error || '未知错误'}`)
+      }
+    } catch (e) {
+      onFlash(`测试请求失败：${e instanceof Error ? e.message : '未知'}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="glass-panel rounded-xl p-4">
+        <Loader2 className="h-4 w-4 animate-spin text-dust" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="glass-panel rounded-xl border-azure/10 p-4">
+      <div className="mb-2 flex items-center gap-2 text-dust">
+        <Camera className="h-4 w-4 text-azure" strokeWidth={1.5} />
+        <span className="text-sm">百度智能云 OCR（手写专用）</span>
+        <span className="ml-auto rounded bg-azure/10 px-1.5 py-0.5 text-[10px] text-azure/80">
+          {enabled ? '已启用' : '未启用'}
+        </span>
+      </div>
+      <p className="text-xs leading-relaxed text-dust">
+        百度手写文字识别接口，针对不规则手写字体优化，识别准确率 90%+，免费额度 500 次/天。
+        配置后作为 OCR <b className="text-azure">优先候选</b>，失败时自动 fallback 到 Kimi K2.6。
+      </p>
+
+      <div className="mt-3 space-y-2 rounded-lg border border-white/5 bg-void-500/30 p-3">
+        <div className="font-mono text-[10px] uppercase tracking-wider text-dust/70">配置方式</div>
+        <p className="text-[11px] text-dust/80">
+          1. 访问 <a href="https://console.bce.baidu.com/ai/#/ai/ocr/overview/index" target="_blank" rel="noreferrer" className="text-azure hover:underline">百度智能云 OCR 控制台</a>
+          {' '}→ 创建应用 → 获取 API Key 和 Secret Key
+        </p>
+        <p className="text-[11px] text-dust/80">
+          2. 编辑服务器 <code className="rounded bg-void-300/50 px-1 text-flux">~/brain/.env</code> 文件，填入：
+        </p>
+        <pre className="overflow-x-auto rounded bg-void-300/50 p-2 font-mono text-[10px] text-flux">
+{`BAIDU_OCR_API_KEY=你的APIKey
+BAIDU_OCR_SECRET_KEY=你的SecretKey
+BAIDU_OCR_ENABLED=true`}
+        </pre>
+        <p className="text-[11px] text-dust/80">
+          3. 重启 backend： <code className="rounded bg-void-300/50 px-1 text-flux">docker compose restart backend</code>
+        </p>
+        <p className="text-[11px] text-dust/80">
+          4. 点击下方「重置模型列表」让百度 OCR 出现在模型列表，或调用 <code className="rounded bg-void-300/50 px-1 text-flux">curl -X POST http://localhost:8000/api/ocr-models/reset</code>
+        </p>
+      </div>
+
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          onClick={testBaidu}
+          disabled={testing || !enabled}
+          className="btn-ghost px-3 py-1.5 text-xs"
+        >
+          {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Camera className="h-3.5 w-3.5" />}
+          测试连通
+        </button>
+        <a
+          href="https://console.bce.baidu.com/ai/#/ai/ocr/overview/index"
+          target="_blank"
+          rel="noreferrer"
+          className="btn-ghost px-3 py-1.5 text-xs"
+        >
+          申请百度 OCR ↗
+        </a>
       </div>
     </div>
   )

@@ -8,3 +8,4 @@ pymupdf==1.25.2
 python-multipart==0.0.20
 pydantic==2.10.5
 pydantic-settings==2.7.1
+requests==2.32.3

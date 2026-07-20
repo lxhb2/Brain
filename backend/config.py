@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: Optional[str] = "https://api.siliconflow.cn/v1"
     # 视觉 OCR 模型（需支持 image_url 多模态）
     LLM_MODEL: str = "Pro/moonshotai/Kimi-K2.6"
+
+    # 百度智能云 OCR（手写文字识别，专用接口，准确率更高）
+    # 申请：https://console.bce.baidu.com/ai/#/ai/ocr/overview/index
+    # 留空则不启用百度 OCR
+    BAIDU_OCR_API_KEY: str = ""
+    BAIDU_OCR_SECRET_KEY: str = ""
+    # 是否启用百度 OCR 作为候选模型（写入 settings_store 的 ocr_models 列表）
+    BAIDU_OCR_ENABLED: bool = False
     # 纯文本问答模型（RAG 用，便宜快速；为空则回退到 LLM_MODEL）
     QA_MODEL: str = "deepseek-ai/DeepSeek-V3.2"
     EMBEDDING_MODEL: str = "BAAI/bge-m3"

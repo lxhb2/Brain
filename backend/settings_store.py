@@ -150,9 +150,12 @@ def _seed_ocr_models() -> List[Dict[str, Any]]:
     所有模型共用 OPENAI_BASE_URL 和 OPENAI_API_KEY，
     这里只保存 model id（如 Pro/moonshotai/Kimi-K2.6）。
     用户可在前端设置页添加更多模型（如 Qwen3-VL、豆包 VL）。
+
+    若 config.BAIDU_OCR_ENABLED=True 且配置了 API Key/Secret，
+    会额外加入一个 baidu 模型（id="baidu"），由 baidu_ocr 模块处理。
     """
     cfg = get_config()
-    return [
+    models = [
         {
             "id": "default",
             "name": "Kimi K2.6",
@@ -161,6 +164,17 @@ def _seed_ocr_models() -> List[Dict[str, Any]]:
             "is_primary": True,
         }
     ]
+    if cfg.BAIDU_OCR_ENABLED and cfg.BAIDU_OCR_API_KEY and cfg.BAIDU_OCR_SECRET_KEY:
+        models.append(
+            {
+                "id": "baidu",
+                "name": "百度手写 OCR",
+                "model": "baidu-handwriting",  # 仅作标识，实际不调 OpenAI 接口
+                "enabled": True,
+                "is_primary": False,
+            }
+        )
+    return models
 
 
 def _seed_link_params() -> Dict[str, Any]:

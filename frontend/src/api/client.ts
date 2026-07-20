@@ -412,8 +412,12 @@ export const api = {
       total: number
       success: number
       failed: number
-      files: Array<{ filename: string; success: boolean; error?: string; saved_as?: string }>
+      files: Array<{ filename: string; success: boolean; error?: string; saved_as?: string; note_id?: number; enqueue?: string }>
       message: string
     }>
   },
+
+  // —— OCR 模型列表 ——
+  listOcrModels: () => getJSON<{ models: OcrModel[] }>('/api/ocr-models'),
+  resetOcrModels: () => postJSON<{ models: OcrModel[] }>('/api/ocr-models/reset', {}),
 }

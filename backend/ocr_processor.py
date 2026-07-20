@@ -325,14 +325,15 @@ def _call_vision_single(client, model_id: str, images: List[str],
     return _parse_structured(raw)
 
 
-def _ocr_structured(client, images: List[str], model_id: Optional[str] = None) -> tuple[Dict[str, Any], Optional[str]]:
+def _ocr_structured(client, images: List[str], model_id: Optional[str] = None, file_path: Optional[str] = None) -> tuple[Dict[str, Any], Optional[str]]:
     """OCR + 结构化，支持指定模型与 fallback。
 
     Args:
         client: OpenAI 客户端
-        images: base64 图片列表
+        images: base64 图片列表（仅 OpenAI vision 路径用）
         model_id: 指定使用的模型 id（settings_store 中的 id）。
                   None 表示用 primary，失败时 fallback。
+        file_path: 原始文件路径（百度 OCR 需要，直接读文件而非 base64）
 
     Returns:
         (structured_dict, used_model_id)
@@ -340,7 +341,17 @@ def _ocr_structured(client, images: List[str], model_id: Optional[str] = None) -
         - used_model_id 实际成功调用的模型 id（settings_store 里的 id），
           失败时为 None
     """
-    if model_id:
+    # baidu 模型走专用路径，不调 OpenAI vision
+    if model_id == "baidu" or (model_id is None and _should_try_baidu_first()):
+        result = _try_baidu_ocr(file_path)
+        if result:
+            return result, "baidu"
+        # baidu 失败：如果指定了 baidu，直接返回失败；
+        # 如果是 fallback 路径（model_id=None），继续往下试 OpenAI 模型
+        if model_id == "baidu":
+            return {}, None
+
+    if model_id and model_id != "baidu":
         # 指定模型：只试这一个
         m = settings_store.get_ocr_model_by_id(model_id)
         if not m:
@@ -358,6 +369,8 @@ def _ocr_structured(client, images: List[str], model_id: Optional[str] = None) -
 
     # 未指定模型：按 enabled 顺序尝试，primary 在前
     candidates = settings_store.get_enabled_ocr_models()
+    # 过滤掉 baidu（已经试过了）
+    candidates = [m for m in candidates if m.get("id") != "baidu"]
     if not candidates:
         # 回退到 env 默认
         cfg = get_config()
@@ -385,6 +398,57 @@ def _ocr_structured(client, images: List[str], model_id: Optional[str] = None) -
     if last_err:
         logger.error("所有 OCR 模型均失败，最后错误: %s", last_err)
     return {}, None
+
+
+def _should_try_baidu_first() -> bool:
+    """判断是否应该优先用百度 OCR（已配置且 baidu 模型在 enabled 列表）。"""
+    cfg = get_config()
+    if not (cfg.BAIDU_OCR_ENABLED and cfg.BAIDU_OCR_API_KEY and cfg.BAIDU_OCR_SECRET_KEY):
+        return False
+    baidu_model = settings_store.get_ocr_model_by_id("baidu")
+    return bool(baidu_model and baidu_model.get("enabled"))
+
+
+def _try_baidu_ocr(file_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """调用百度 OCR 处理文件，返回结构化结果。
+
+    百度 OCR 只返回纯文本，title/summary/keywords 由本地规则提取：
+    - title: 第一行前 30 字符
+    - summary: 前 100 字符
+    - keywords: 空（百度不提供关键词）
+    """
+    if not file_path or not os.path.exists(file_path):
+        logger.warning("百度 OCR：文件路径无效或不存在 %s", file_path)
+        return None
+    cfg = get_config()
+    if not (cfg.BAIDU_OCR_API_KEY and cfg.BAIDU_OCR_SECRET_KEY):
+        logger.warning("百度 OCR 未配置凭证")
+        return None
+    try:
+        import baidu_ocr
+        logger.info("尝试 OCR 模型: 百度手写 OCR (handwriting)")
+        text = baidu_ocr.recognize_file(
+            file_path,
+            api_key=cfg.BAIDU_OCR_API_KEY,
+            secret_key=cfg.BAIDU_OCR_SECRET_KEY,
+        )
+        if not text or not text.strip():
+            logger.warning("百度 OCR 返回空文本")
+            return None
+        text = text.strip()
+        # 简单结构化
+        first_line = text.split("\n", 1)[0].strip()[:30]
+        title = first_line or "(百度 OCR 笔记)"
+        summary = text[:100].replace("\n", " ")
+        return {
+            "title": title,
+            "ocr_text": text,
+            "summary": summary,
+            "keywords": [],
+        }
+    except Exception as e:
+        logger.warning("百度 OCR 失败: %s", e)
+        return None
 
 
 def _embed_text(client, text: str) -> List[float]:
@@ -495,7 +559,7 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
             structured = _demo_structured(file_path)
             embedding = _demo_embedding(seed=note_id)
         else:
-            structured, used_model_id = _ocr_structured(client, images, model_id=model_id)
+            structured, used_model_id = _ocr_structured(client, images, model_id=model_id, file_path=file_path)
             if not structured:
                 raise RuntimeError("LLM 返回内容无法解析为 JSON（所有候选模型均失败）")
             embed_input = (

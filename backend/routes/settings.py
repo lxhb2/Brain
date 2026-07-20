@@ -97,6 +97,42 @@ def reset_ocr_models() -> Dict[str, Any]:
     return {"models": settings_store.get_ocr_models()}
 
 
+@router.post("/ocr-models/baidu/test")
+def test_baidu_ocr() -> Dict[str, Any]:
+    """测试百度 OCR 连通性。
+
+    用一张内置的测试图片调一次百度 handwriting 接口，
+    返回识别字符数和前 50 字符。
+    """
+    cfg = get_config()
+    if not (cfg.BAIDU_OCR_API_KEY and cfg.BAIDU_OCR_SECRET_KEY):
+        return {"ok": False, "error": "百度 OCR 未配置 API_KEY / SECRET_KEY"}
+    try:
+        import baidu_ocr
+        import io
+        from PIL import Image, ImageDraw
+
+        # 生成一张测试图片（白底黑字「测试百度 OCR」）
+        img = Image.new("RGB", (400, 100), "white")
+        draw = ImageDraw.Draw(img)
+        draw.text((30, 30), "Hello 百度 OCR 测试", fill="black")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        text = baidu_ocr.recognize_image(
+            buf.getvalue(),
+            api_key=cfg.BAIDU_OCR_API_KEY,
+            secret_key=cfg.BAIDU_OCR_SECRET_KEY,
+        )
+        return {
+            "ok": True,
+            "chars": len(text),
+            "preview": text[:50],
+            "message": f"识别到 {len(text)} 字符",
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.post("/ocr-models")
 def add_ocr_model(body: OcrModelItem) -> Dict[str, Any]:
     """新增一个 OCR 模型。"""
