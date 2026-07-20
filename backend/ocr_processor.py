@@ -209,6 +209,11 @@ _OCR_PROMPT = """你是一名专业的手写笔记 OCR 与结构化助手。请�
 def _call_vision_model(client, model_id: str, images: List[str]) -> Dict[str, Any]:
     """调用指定的多模态模型做 OCR + 结构化。
 
+    单图（图片笔记或单页 PDF）：一次调用，结构化输出。
+    多图（多页 PDF）：分页调用，每页单独 OCR，最后合并 ocr_text，
+    title 取首页，summary 综合各页摘要。这样能避免多图一次性发送导致
+    模型注意力分散、内容丢失或被 token 上限截断。
+
     Args:
         client: OpenAI 客户端
         model_id: 模型 ID（如 Qwen/Qwen3-VL-32B-Instruct）
@@ -217,8 +222,94 @@ def _call_vision_model(client, model_id: str, images: List[str]) -> Dict[str, An
     Returns:
         解析后的结构化 dict（可能为空 dict 表示解析失败）
     """
-    content: List[Dict[str, Any]] = [{"type": "text", "text": _OCR_PROMPT}]
-    for img_b64 in images[:10]:
+    if len(images) <= 1:
+        return _call_vision_single(client, model_id, images)
+
+    # 多页：分页 OCR，最后合并
+    logger.info("多页文档（%d 页），分页 OCR 后合并", len(images))
+    page_results: List[Dict[str, Any]] = []
+    for idx, img in enumerate(images):
+        try:
+            r = _call_vision_single(client, model_id, [img], page_idx=idx + 1, total_pages=len(images))
+            if r:
+                page_results.append(r)
+            else:
+                logger.warning("第 %d/%d 页 OCR 返回空，跳过", idx + 1, len(images))
+        except Exception as e:
+            logger.warning("第 %d/%d 页 OCR 失败: %s", idx + 1, len(images), e)
+            continue
+
+    if not page_results:
+        return {}
+
+    # 合并
+    merged_ocr_parts: List[str] = []
+    for i, r in enumerate(page_results, 1):
+        page_text = r.get("ocr_text") or ""
+        if page_text:
+            merged_ocr_parts.append(f"--- 第 {i} 页 ---\n{page_text}")
+    merged_ocr = "\n\n".join(merged_ocr_parts)
+
+    # title 用第一页的
+    merged_title = page_results[0].get("title") or ""
+    # summary 综合各页
+    summary_parts = [r.get("summary") for r in page_results if r.get("summary")]
+    merged_summary = " | ".join(summary_parts) if summary_parts else ""
+
+    # keywords 合并去重
+    kw_set = []
+    for r in page_results:
+        for k in r.get("keywords") or []:
+            if k not in kw_set:
+                kw_set.append(k)
+
+    return {
+        "title": merged_title or "(多页笔记)",
+        "ocr_text": merged_ocr,
+        "summary": merged_summary,
+        "keywords": kw_set[:10],
+    }
+
+
+def _call_vision_single(client, model_id: str, images: List[str],
+                        page_idx: Optional[int] = None, total_pages: Optional[int] = None) -> Dict[str, Any]:
+    """单次调用视觉模型（单图或单页）。
+
+    Args:
+        client: OpenAI 客户端
+        model_id: 模型 ID
+        images: 单张 base64 图片
+        page_idx: 当前页码（多页时用）
+        total_pages: 总页数（多页时用）
+    """
+    if page_idx and total_pages:
+        prompt = f"""你是一名专业的手写笔记 OCR 与结构化助手。这是多页文档的第 {page_idx}/{total_pages} 页，请仔细识别本页的所有手写内容，要求：
+
+1. **完整准确地转录**本页所有手写文字，包括公式、符号、图表标注、箭头说明等。
+2. 保留原文的段落结构与层次（标题、列表、缩进）。
+3. 数学公式用 LaTeX 语法（行内 $...$，独立块 $$...$$）。
+4. 表格用 Markdown 表格语法。
+5. 无法识别的字用 □ 占位，不要瞎猜。
+
+识别完成后，用 JSON 返回本页的结构化字段：
+
+```json
+{{
+  "title": "本页标题（5-15字）",
+  "ocr_text": "本页完整识别的文本",
+  "summary": "本页 1-2 句摘要",
+  "keywords": ["本页关键词1", "本页关键词2"]
+}}
+```
+
+要求：
+- 仅返回上述 JSON 对象，不要任何额外解释
+- ocr_text 必须保留本页全部识别内容，不要截断"""
+    else:
+        prompt = _OCR_PROMPT
+
+    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for img_b64 in images[:1]:  # 单次只发一张图
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/png;base64,{img_b64}"},
@@ -227,8 +318,8 @@ def _call_vision_model(client, model_id: str, images: List[str]) -> Dict[str, An
         model=model_id,
         messages=[{"role": "user", "content": content}],
         temperature=0.1,
-        max_tokens=4000,  # 提高 token 上限，避免长笔记被截断
-        timeout=120,  # 长笔记 OCR 可能较慢
+        max_tokens=8000,  # 单页 OCR 上限放宽
+        timeout=120,
     )
     raw = resp.choices[0].message.content or ""
     return _parse_structured(raw)

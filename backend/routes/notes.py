@@ -45,14 +45,26 @@ def get_note(note_id: int):
 
 @router.get("/{note_id}/file")
 def get_note_file(note_id: int):
-    """返回笔记原始文件流。"""
+    """返回笔记原始文件流。显式指定 Content-Type 以支持浏览器内嵌预览（PDF/图片）。"""
     note = database.get_note(note_id)
     if not note:
         raise HTTPException(status_code=404, detail="笔记不存在")
     file_path = note.get("file_path") or ""
     if not file_path or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="原始文件不存在")
-    return FileResponse(file_path, filename=os.path.basename(file_path))
+    # 根据扩展名显式指定 media_type，避免移动端 Chrome 把 PDF 当下载
+    ext = os.path.splitext(file_path)[1].lower()
+    media_type = {
+        ".pdf": "application/pdf",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+    }.get(ext, "application/octet-stream")
+    headers = {
+        # 允许浏览器内嵌展示（iframe / img），避免某些代理附加下载头
+        "Content-Disposition": f"inline; filename=\"{os.path.basename(file_path)}\""
+    }
+    return FileResponse(file_path, media_type=media_type, filename=os.path.basename(file_path), headers=headers)
 
 
 @router.get("/{note_id}/thumbnail")
