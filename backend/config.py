@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_BASE_URL: Optional[str] = "https://api.siliconflow.cn/v1"
     # 视觉 OCR 模型（需支持 image_url 多模态）
-    LLM_MODEL: str = "Qwen/Qwen3-VL-32B-Instruct"
+    LLM_MODEL: str = "Pro/moonshotai/Kimi-K2.6"
     # 纯文本问答模型（RAG 用，便宜快速；为空则回退到 LLM_MODEL）
     QA_MODEL: str = "deepseek-ai/DeepSeek-V3.2"
     EMBEDDING_MODEL: str = "BAAI/bge-m3"

@@ -148,14 +148,14 @@ def _seed_ocr_models() -> List[Dict[str, Any]]:
     """根据 config.LLM_MODEL 生成默认 OCR 模型列表。
 
     所有模型共用 OPENAI_BASE_URL 和 OPENAI_API_KEY，
-    这里只保存 model id（如 Qwen/Qwen3-VL-32B-Instruct）。
-    用户可在前端设置页添加更多模型（如 Kimi 2.6、豆包 VL）。
+    这里只保存 model id（如 Pro/moonshotai/Kimi-K2.6）。
+    用户可在前端设置页添加更多模型（如 Qwen3-VL、豆包 VL）。
     """
     cfg = get_config()
     return [
         {
             "id": "default",
-            "name": "默认模型",
+            "name": "Kimi K2.6",
             "model": cfg.LLM_MODEL,
             "enabled": True,
             "is_primary": True,
@@ -266,6 +266,14 @@ def set_ocr_models(models: List[Dict[str, Any]]) -> None:
                 m["is_primary"] = True
                 break
     _set_raw("ocr_models", cleaned)
+
+
+def reset_ocr_models() -> None:
+    """重置 OCR 模型列表为默认 seed（用 config.LLM_MODEL 作为 primary）。
+
+    用于切换默认模型后让设置页生效，或修复历史误配置。
+    """
+    _set_raw("ocr_models", _seed_ocr_models())
 
 
 def get_primary_ocr_model() -> Optional[Dict[str, Any]]:

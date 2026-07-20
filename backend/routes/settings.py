@@ -87,6 +87,16 @@ def list_ocr_models() -> Dict[str, Any]:
     return {"models": settings_store.get_ocr_models()}
 
 
+@router.post("/ocr-models/reset")
+def reset_ocr_models() -> Dict[str, Any]:
+    """重置 OCR 模型列表为默认配置（用 config.LLM_MODEL 作为 primary）。
+
+    用于修复历史误配置或切换默认模型后让设置页生效。
+    """
+    settings_store.reset_ocr_models()
+    return {"models": settings_store.get_ocr_models()}
+
+
 @router.post("/ocr-models")
 def add_ocr_model(body: OcrModelItem) -> Dict[str, Any]:
     """新增一个 OCR 模型。"""
