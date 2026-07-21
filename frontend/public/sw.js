@@ -1,5 +1,7 @@
 // Brain Service Worker —— 离线缓存与 PWA 支持
-const CACHE_NAME = 'brain-v1';
+// 版本号：每次前端发版需更新（构建时由 CI 注入 git short hash 更佳）
+const CACHE_VERSION = 'v2-20260721';
+const CACHE_NAME = `brain-${CACHE_VERSION}`;
 const STATIC_ASSETS = [
   '/',
   '/graph',

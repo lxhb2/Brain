@@ -124,6 +124,24 @@ class NoteWatcher(FileSystemEventHandler):
         # 注意：src_path 在 on_moved 时可能已不存在，这里只处理 dest
         self._handle_path(new_path)
 
+    def on_deleted(self, event) -> None:  # type: ignore[override]
+        """文件被删除：级联清理数据库记录和缩略图。"""
+        if event.is_directory:
+            return
+        src_path = event.src_path
+        if not src_path:
+            return
+        # 查找数据库中是否有该路径的笔记
+        existing = database.get_note_by_path(src_path)
+        if not existing:
+            return
+        try:
+            ok = database.delete_note(existing["id"])
+            if ok:
+                logger.info("watcher 检测到删除: %s (note_id=%s)", src_path, existing["id"])
+        except Exception as e:
+            logger.warning("删除笔记失败 %s: %s", src_path, e)
+
 
 _observers: List[Observer] = []
 

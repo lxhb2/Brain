@@ -253,6 +253,14 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function deleteJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(`DELETE ${url} 失败：${res.status}`)
+  }
+  return res.json() as Promise<T>
+}
+
 async function patchJSON<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: 'PATCH',
@@ -326,6 +334,12 @@ export const api = {
   ),
   clearManualEdit: (id: number) =>
     postJSON<{ note_id: number; manually_edited: boolean }>(`/api/notes/${id}/clear-manual-edit`, {}),
+
+  // 删除笔记（数据库记录 + links + 缩略图，可选删物理文件）
+  deleteNote: (id: number, hard: boolean = false) =>
+    deleteJSON<{ deleted: boolean; note_id: number; hard: boolean }>(
+      `/api/notes/${id}?hard=${hard ? 'true' : 'false'}`,
+    ),
 
   // 图谱
   getGraph: (params: { device?: string; app?: string; q?: string; status?: string } = {}) => {
@@ -406,6 +420,26 @@ export const api = {
   vacuumDb: () => postJSON<{ vacuumed: boolean; before_bytes: number; after_bytes: number }>('/api/system/vacuum', {}),
   reprocessAll: () => postJSON<{ reprocessed: boolean; count: number }>('/api/system/reprocess-all', {}),
   getSources: () => getJSON<{ sources: SourceStat[] }>('/api/system/sources'),
+
+  // 每日归纳
+  triggerDailySummary: (date?: string) =>
+    postJSON<{ generated: boolean; summary_id?: number; notes_count?: number; reason?: string }>(
+      `/api/system/daily-summary${date ? `?date=${date}` : ''}`,
+      {},
+    ),
+  listDailySummaries: (limit = 7) =>
+    getJSON<{ summaries: Array<{ id: number; date: string; content: string; note_ids: number[]; created_at: string; updated_at: string }> }>(
+      `/api/system/daily-summaries?limit=${limit}`,
+    ),
+  getDailySummary: (date: string) =>
+    getJSON<{ id: number; date: string; content: string; note_ids: number[]; created_at: string; updated_at: string }>(
+      `/api/system/daily-summaries/${date}`,
+    ),
+  triggerDecay: () =>
+    postJSON<{ links: { decayed: number; removed: number }; memories: { removed: number } }>(
+      '/api/system/decay',
+      {},
+    ),
 
   // —— OCR 模型管理 ——
   listOcrModels: () => getJSON<{ models: OcrModel[] }>('/api/ocr-models'),

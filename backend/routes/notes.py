@@ -284,6 +284,33 @@ def clear_manual_edit(note_id: int):
     return {"note_id": note_id, "manually_edited": False}
 
 
+@router.delete("/{note_id}")
+def delete_note(note_id: int, hard: bool = False):
+    """删除笔记（数据库记录 + links + 缩略图）。
+
+    Args:
+        hard: 是否同时删除物理文件。默认 False（仅删数据库记录）。
+              Syncthing 同步的文件建议让 Syncthing 自己删，这里只清 DB。
+    """
+    note = database.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    file_path = note.get("file_path", "")
+    ok = database.delete_note(note_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="删除失败")
+    # 可选：删除物理文件
+    if hard and file_path:
+        try:
+            import os
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            # 物理文件删除失败不回滚 DB（DB 已删，文件残留可接受）
+            pass
+    return {"deleted": True, "note_id": note_id, "hard": hard}
+
+
 class ReOcrRequest(BaseModel):
     """用指定模型重新 OCR。"""
     model_id: Optional[str] = None  # None 表示用 primary

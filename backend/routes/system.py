@@ -25,12 +25,54 @@ router = APIRouter(prefix="/api", tags=["system"])
 
 @router.get("/health")
 def health() -> Dict[str, Any]:
-    """健康检查。"""
+    """健康检查：暴露各组件运行状态。
+
+    任一关键组件失败返回 status=degraded（HTTP 仍 200，让健康检查
+    不误判，但前端可据此显示降级提示）。
+    """
     cfg = get_config()
     model_cfg = settings_store.get_model_config()
+
+    # 各组件状态
+    components: Dict[str, str] = {}
+
+    # watcher
+    try:
+        import watcher
+        components["watcher"] = "ok" if watcher._observers else "stopped"
+    except Exception:
+        components["watcher"] = "unknown"
+
+    # scheduler
+    try:
+        import scheduler
+        components["scheduler"] = "ok" if scheduler._scheduler else "stopped"
+    except Exception:
+        components["scheduler"] = "unknown"
+
+    # worker
+    try:
+        import scheduler
+        components["worker"] = "ok" if (scheduler._worker_thread and scheduler._worker_thread.is_alive()) else "stopped"
+    except Exception:
+        components["worker"] = "unknown"
+
+    # DB
+    try:
+        database.get_stats()
+        components["db"] = "ok"
+    except Exception:
+        components["db"] = "error"
+
+    # LLM key 是否配置
+    components["llm"] = "ok" if cfg.OPENAI_API_KEY else "unconfigured"
+
+    degraded = any(v in ("error", "stopped") for v in components.values())
     return {
-        "status": "ok",
+        "status": "degraded" if degraded else "ok",
+        "components": components,
         "openai_configured": bool(cfg.OPENAI_API_KEY),
+        "baidu_ocr_enabled": bool(cfg.BAIDU_OCR_ENABLED and cfg.BAIDU_OCR_API_KEY and cfg.BAIDU_OCR_SECRET_KEY),
         "llm_model": model_cfg.get("llm_model", cfg.LLM_MODEL),
         "qa_model": model_cfg.get("qa_model", cfg.QA_MODEL),
         "embedding_model": model_cfg.get("embedding_model", cfg.EMBEDDING_MODEL),
@@ -116,15 +158,49 @@ def rebuild_links(body: RebuildLinksRequest) -> Dict[str, Any]:
 
 @router.post("/system/retry-failed")
 def retry_failed() -> Dict[str, Any]:
-    """把所有 failed 状态的笔记重置为 pending 并重新入队。"""
-    with database._db_lock, database.get_conn() as conn:
-        rows = conn.execute("SELECT id FROM notes WHERE status='failed'").fetchall()
-    count = 0
-    for r in rows:
-        database.update_note_status(r["id"], "pending")
-        scheduler.enqueue_note(r["id"])
-        count += 1
+    """把所有 failed 状态的笔记重置为 pending 并重新入队。
+
+    注意：retry_count 会被保留（避免无限重试），如果想清零请用
+    /system/reset-retry-count。
+    """
+    count = scheduler.retry_failed_ocr()
     return {"retried": True, "count": count}
+
+
+@router.post("/system/daily-summary")
+def trigger_daily_summary(date: str | None = None) -> Dict[str, Any]:
+    """手动触发生成每日归纳。
+
+    Args:
+        date: YYYY-MM-DD 格式。None 表示今天。
+    """
+    result = scheduler.generate_daily_summary(target_date=date)
+    if not result:
+        return {"generated": False, "reason": "无 done 笔记或 LLM 失败"}
+    return {"generated": True, **result}
+
+
+@router.get("/system/daily-summaries")
+def list_daily_summaries(limit: int = 7) -> Dict[str, Any]:
+    """列出最近 N 天的归纳。"""
+    return {"summaries": database.list_recent_daily_summaries(limit=limit)}
+
+
+@router.get("/system/daily-summaries/{date}")
+def get_daily_summary_by_date(date: str) -> Dict[str, Any]:
+    """获取某天的归纳。"""
+    summary = database.get_daily_summary(date)
+    if not summary:
+        raise HTTPException(status_code=404, detail="该日期无归纳")
+    return summary
+
+
+@router.post("/system/decay")
+def trigger_decay() -> Dict[str, Any]:
+    """手动触发一次记忆/链接衰减。"""
+    link_result = database.decay_link_weights()
+    mem_result = database.decay_memory_weights()
+    return {"links": link_result, "memories": mem_result}
 
 
 @router.post("/system/vacuum")

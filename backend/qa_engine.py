@@ -403,18 +403,21 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
 
     try:
         # Agent loop：最多 _MAX_TOOL_CALLS 次 tool 调用
-        for iteration in range(_MAX_TOOL_CALLS + 1):
+        tool_call_count = 0
+        while True:
+            # 达到上限：最后一次调用不再带 tools，强制让 LLM 给最终答案
+            use_tools = tool_call_count < _MAX_TOOL_CALLS
             resp = client.chat.completions.create(
                 model=cfg.QA_MODEL or cfg.LLM_MODEL,
                 messages=messages,
-                tools=_TOOLS,
+                tools=_TOOLS if use_tools else None,
                 temperature=0.2,
                 max_tokens=1200,
                 timeout=60,
             )
             msg = resp.choices[0].message
 
-            # 没有 tool_calls → 最终答案
+            # 没有 tool_calls → 最终答案，结束循环
             if not msg.tool_calls:
                 answer = (msg.content or "").strip()
                 break
@@ -449,27 +452,19 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                     "arguments": args,
                     "result_preview": result[:200],
                 })
-                logger.info("Agent 调用 tool: %s args=%s", tool_name, args)
+                logger.info("Agent 调用 tool [%d/%d]: %s args=%s",
+                            tool_call_count + 1, _MAX_TOOL_CALLS, tool_name, args)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "content": result,
                 })
+                tool_call_count += 1
+                # 单次 tool_call 数量也达上限就退出
+                if tool_call_count >= _MAX_TOOL_CALLS:
+                    break
 
-            # 达到上限就强制让 LLM 给最终答案（不再带 tools）
-            if iteration == _MAX_TOOL_CALLS - 1:
-                resp = client.chat.completions.create(
-                    model=cfg.QA_MODEL or cfg.LLM_MODEL,
-                    messages=messages,
-                    temperature=0.2,
-                    max_tokens=1200,
-                    timeout=60,
-                )
-                answer = (resp.choices[0].message.content or "").strip()
-                break
-        else:
-            # 兜底：循环结束仍没答案
-            answer = "（Agent 未能给出最终答案，请重试）"
+            # 如果已达上限，下一轮循环会因 use_tools=False 强制收尾
 
     except Exception as e:
         logger.exception("LLM 问答失败: %s", e)

@@ -1,10 +1,14 @@
 """定时调度与后台处理 worker。
 
-- start_scheduler(): 启动 APScheduler，每天 03:00 执行 full_scan()
-- full_scan(): 遍历所有 WATCH_DIRS，对新文件入队待处理
-- 处理队列（queue.Queue）+ 后台 worker 线程：消费 note_id 调用 ocr_processor
-- enqueue_note(note_id): 把笔记 id 投入队列
-- start_worker(): 启动 worker 线程
+定时任务（均使用 Asia/Shanghai 时区）：
+  - 每日 03:00 full_scan：扫描监听目录新文件
+  - 每日 23:00 daily_summary：把今天的笔记交给 LLM 生成归纳
+  - 每日 03:30 decay：链接权重衰减 + 记忆权重衰减
+  - 每小时 retry_failed：自动重试失败的 OCR（最多 3 次）
+
+后台 worker：
+  - 队列消费 note_id，调用 ocr_processor.process_note
+  - 失败时自动 increment_retry_count 并置 failed
 """
 from __future__ import annotations
 
@@ -12,13 +16,17 @@ import logging
 import os
 import queue
 import threading
-from typing import List, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional
 
 import database
 import ocr_processor
-from config import get_watch_dirs_runtime
+from config import get_config, get_watch_dirs_runtime
 
 logger = logging.getLogger("brain.scheduler")
+
+# 国内时区（避免依赖 zoneinfo）
+_TZ_SHANGHAI = timezone(timedelta(hours=8))
 
 SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg")
 
@@ -58,8 +66,11 @@ def _worker_loop() -> None:
                 continue
             ocr_processor.process_note(note_id)
         except Exception as e:
+            err_msg = str(e)
             logger.exception("worker 处理笔记 %s 失败: %s", note_id, e)
             try:
+                # 记录重试次数和错误信息，便于自动重试和前端展示
+                database.increment_retry_count(note_id, err_msg)
                 database.update_note_status(note_id, "failed")
             except Exception:
                 pass
@@ -154,10 +165,108 @@ def _is_temp_or_hidden(fname: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 每日归纳
+# ---------------------------------------------------------------------------
+def generate_daily_summary(target_date: Optional[str] = None) -> Optional[Dict[str, int]]:
+    """生成某天的笔记归纳，存入 daily_summaries 表。
+
+    Args:
+        target_date: YYYY-MM-DD 格式。None 表示今天（Asia/Shanghai）。
+    """
+    if target_date is None:
+        target_date = datetime.now(_TZ_SHANGHAI).strftime("%Y-%m-%d")
+
+    notes = database.list_notes_by_date(target_date)
+    if not notes:
+        logger.info("每日归纳：%s 无 done 笔记，跳过", target_date)
+        return None
+
+    note_ids = [n["id"] for n in notes]
+    # 拼接笔记摘要给 LLM
+    notes_text_parts = []
+    for n in notes:
+        title = n.get("title") or "(未命名)"
+        summary = (n.get("summary") or "").strip()
+        ocr = (n.get("ocr_text") or "").strip()
+        if len(ocr) > 300:
+            ocr = ocr[:300] + "..."
+        notes_text_parts.append(f"#{n['id']} {title}\n摘要：{summary}\n内容：{ocr}")
+    notes_text = "\n\n".join(notes_text_parts)[:6000]  # 截断防止超长
+
+    client = ocr_processor._get_client()
+    if client is None:
+        logger.warning("每日归纳：无 LLM 客户端，跳过")
+        return None
+
+    cfg = ocr_processor.get_config()
+    prompt = (
+        f"以下是用户在 {target_date} 录入的 {len(notes)} 条笔记。"
+        "请生成一份简洁的当日归纳：\n"
+        "1. 今日学习/记录的主要主题（1-3 个关键词）\n"
+        "2. 每条笔记的核心要点（1 句话）\n"
+        "3. 笔记之间的关联或主题归类（如有）\n\n"
+        f"笔记内容：\n{notes_text}"
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=1000,
+            timeout=60,
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if not content:
+            logger.warning("每日归纳：LLM 返回空内容")
+            return None
+        summary_id = database.upsert_daily_summary(target_date, content, note_ids)
+        logger.info("每日归纳完成：%s 共 %d 条笔记，归纳 id=%s",
+                    target_date, len(notes), summary_id)
+        return {"summary_id": summary_id, "notes_count": len(notes)}
+    except Exception as e:
+        logger.exception("每日归纳失败：%s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 自动重试失败的 OCR
+# ---------------------------------------------------------------------------
+MAX_RETRIES = 3
+
+
+def retry_failed_ocr() -> int:
+    """自动重试失败的 OCR（最多 MAX_RETRIES 次）。
+
+    返回重新入队的目标数。
+    """
+    failed = database.list_failed_notes_for_retry(max_retries=MAX_RETRIES, limit=50)
+    if not failed:
+        return 0
+    count = 0
+    for n in failed:
+        try:
+            database.update_note_status(n["id"], "pending")
+            enqueue_note(n["id"])
+            count += 1
+        except Exception as e:
+            logger.warning("重试入队失败 note_id=%s: %s", n["id"], e)
+    logger.info("自动重试：%d 条失败笔记重新入队", count)
+    return count
+
+
+# ---------------------------------------------------------------------------
 # 调度器
 # ---------------------------------------------------------------------------
 def start_scheduler() -> None:
-    """启动 APScheduler，注册每日 03:00 的 full_scan 任务。幂等。"""
+    """启动 APScheduler，注册定时任务。幂等。
+
+    所有任务使用 Asia/Shanghai 时区：
+      - 03:00 full_scan（扫描新文件）
+      - 03:30 decay（衰减链接权重 + 记忆权重）
+      - 23:00 daily_summary（生成今日归纳）
+      - 每小时 retry_failed_ocr（自动重试失败 OCR）
+    """
     global _scheduler
     if _scheduler is not None:
         return
@@ -168,7 +277,9 @@ def start_scheduler() -> None:
         logger.error("apscheduler 未安装: %s", e)
         return
 
-    sched = BackgroundScheduler(timezone="UTC")
+    sched = BackgroundScheduler(timezone=_TZ_SHANGHAI)
+
+    # 每日 03:00 全量扫描
     sched.add_job(
         full_scan,
         trigger=CronTrigger(hour=3, minute=0),
@@ -176,11 +287,47 @@ def start_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
-    # 可选：每日候选链接衰减（简化版，复用 full_scan 时段）
-    # 这里不做额外任务，保持简单
+
+    # 每日 03:30 记忆/链接衰减
+    def _decay_job():
+        try:
+            link_result = database.decay_link_weights(decay_factor=0.95, min_weight=0.1)
+            mem_result = database.decay_memory_weights(decay_factor=0.98, min_weight=0.2)
+            logger.info("衰减完成：链接 %s，记忆 %s", link_result, mem_result)
+        except Exception as e:
+            logger.exception("衰减任务失败：%s", e)
+
+    sched.add_job(
+        _decay_job,
+        trigger=CronTrigger(hour=3, minute=30),
+        id="brain_decay",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # 每日 23:00 生成今日归纳
+    sched.add_job(
+        generate_daily_summary,
+        trigger=CronTrigger(hour=23, minute=0),
+        id="brain_daily_summary",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # 每小时重试失败的 OCR
+    sched.add_job(
+        retry_failed_ocr,
+        trigger=CronTrigger(minute=15),  # 每小时第 15 分钟
+        id="brain_retry_failed",
+        replace_existing=True,
+        misfire_grace_time=600,
+    )
+
     sched.start()
     _scheduler = sched
-    logger.info("APScheduler 已启动，每日 03:00 UTC 执行 full_scan")
+    logger.info(
+        "APScheduler 已启动 (Asia/Shanghai)：03:00 全量扫描 / 03:30 衰减 / 23:00 每日归纳 / 每小时重试失败"
+    )
 
 
 def stop_scheduler() -> None:

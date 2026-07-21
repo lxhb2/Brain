@@ -146,6 +146,14 @@ def init_db() -> None:
             logger.info("迁移：为 notes 表添加 manually_edited 列")
             c.execute("ALTER TABLE notes ADD COLUMN manually_edited INTEGER DEFAULT 0;")
 
+        # —— 兼容性迁移：notes.retry_count + last_error（OCR 失败重试）——
+        try:
+            c.execute("SELECT retry_count FROM notes LIMIT 0;")
+        except sqlite3.OperationalError:
+            logger.info("迁移：为 notes 表添加 retry_count / last_error 列")
+            c.execute("ALTER TABLE notes ADD COLUMN retry_count INTEGER DEFAULT 0;")
+            c.execute("ALTER TABLE notes ADD COLUMN last_error TEXT;")
+
         # —— 长期记忆表：存用户偏好、关键事实、修正过的知识点 ——
         # type: 'preference' | 'fact' | 'correction' | 'term'
         # content: 记忆内容（自然语言）
@@ -191,6 +199,20 @@ def init_db() -> None:
             """
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_qa_sessions_updated ON qa_sessions(updated_at DESC);")
+
+        # —— 每日归纳表：scheduler 每日生成的笔记归纳 ——
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                note_ids TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +513,39 @@ def delete_links_for_note(note_id: int) -> None:
             "DELETE FROM links WHERE source_note_id = ? OR target_note_id = ?;",
             (note_id, note_id),
         )
+
+
+def delete_note(note_id: int) -> bool:
+    """级联删除一条笔记：notes 行 + links + 缩略图文件。
+
+    qa_history 中引用该笔记的记录不删（保留历史问答），但 citations 字段
+    里的 note_id 会失效（前端展示时按 note_id 跳转会 404，可接受）。
+    user_memory 中 related_qa_id 也不动。
+
+    Returns: True 如果笔记存在且被删除。
+    """
+    note = get_note(note_id)
+    if not note:
+        return False
+    with _db_lock, get_conn() as conn:
+        # 1. 删 links
+        conn.execute(
+            "DELETE FROM links WHERE source_note_id = ? OR target_note_id = ?;",
+            (note_id, note_id),
+        )
+        # 2. 删 notes 行
+        conn.execute("DELETE FROM notes WHERE id = ?;", (note_id,))
+    # 3. 删缩略图文件（在锁外做 IO）
+    try:
+        thumb_dir = Path(get_config().THUMBNAIL_DIR)
+        for thumb in thumb_dir.glob(f"{note_id}.*"):
+            try:
+                thumb.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return True
 
 
 def list_links() -> List[Dict[str, Any]]:
@@ -880,59 +935,6 @@ def touch_memory(memory_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# qa_history 扩展（session_id）
-# ---------------------------------------------------------------------------
-def insert_qa(
-    *,
-    question: str,
-    answer: str,
-    citations: List[Dict[str, Any]],
-    session_id: Optional[str] = None,
-) -> int:
-    """记录一次问答，返回 qa_history.id。支持 session_id 会话分组。"""
-    with _db_lock, get_conn() as conn:
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                """
-                INSERT INTO qa_history (question, answer, citations, created_at, session_id)
-                VALUES (?, ?, ?, ?, ?);
-                """,
-                (question, answer, json.dumps(citations, ensure_ascii=False), _now(), session_id),
-            )
-        except sqlite3.OperationalError:
-            # 旧库没有 session_id 列，回退
-            cur.execute(
-                """
-                INSERT INTO qa_history (question, answer, citations, created_at)
-                VALUES (?, ?, ?, ?);
-                """,
-                (question, answer, json.dumps(citations, ensure_ascii=False), _now()),
-            )
-        return int(cur.lastrowid)
-
-
-def get_qa_history(limit: int = 50, offset: int = 0, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """返回问答历史。可按 session_id 过滤。"""
-    where = " WHERE session_id = ?" if session_id else ""
-    params: List[Any] = [session_id] if session_id else []
-    sql = f"SELECT * FROM qa_history{where} ORDER BY created_at DESC LIMIT ? OFFSET ?;"
-    params.extend([int(limit), int(offset)])
-    with get_conn() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        out: List[Dict[str, Any]] = []
-        for r in rows:
-            d = dict(r)
-            if isinstance(d.get("citations"), str):
-                try:
-                    d["citations"] = json.loads(d["citations"])
-                except (json.JSONDecodeError, TypeError):
-                    d["citations"] = []
-            out.append(d)
-        return out
-
-
-# ---------------------------------------------------------------------------
 # 向量检索（内存态余弦相似度）
 # ---------------------------------------------------------------------------
 def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
@@ -1003,3 +1005,166 @@ def _queue_size() -> int:
         return queue_size()
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# 崩溃恢复 + OCR 重试 + 每日归纳 + 记忆衰减
+# ---------------------------------------------------------------------------
+def reset_stale_processing_notes() -> int:
+    """启动时把 status='processing' 的笔记重置为 pending（崩溃恢复）。
+
+    返回重置的条数。
+    """
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE notes SET status='pending' WHERE status='processing';"
+        )
+        return cur.rowcount
+
+
+def list_notes_by_date(date_str: str) -> List[Dict[str, Any]]:
+    """列出某天（本地日期，格式 YYYY-MM-DD）创建的 done 笔记。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM notes WHERE status='done' "
+            "AND substr(created_at, 1, 10) = ? "
+            "ORDER BY created_at ASC;",
+            (date_str,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def increment_retry_count(note_id: int, error: str) -> int:
+    """递增重试次数并记录 last_error，返回新的重试次数。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE notes SET retry_count = retry_count + 1, last_error = ? WHERE id = ?;",
+            (error[:500], note_id),
+        )
+        row = conn.execute(
+            "SELECT retry_count FROM notes WHERE id = ?;", (note_id,)
+        ).fetchone()
+        return int(row["retry_count"]) if row else 0
+
+
+def list_failed_notes_for_retry(max_retries: int = 3, limit: int = 50) -> List[Dict[str, Any]]:
+    """列出可重试的失败笔记（retry_count < max_retries）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM notes WHERE status='failed' AND retry_count < ? "
+            "ORDER BY created_at ASC LIMIT ?;",
+            (int(max_retries), int(limit)),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def decay_link_weights(decay_factor: float = 0.95, min_weight: float = 0.1) -> Dict[str, int]:
+    """对所有 links.weight 做指数衰减（记忆衰减）。
+
+    weight *= decay_factor；权重低于 min_weight 的删除。
+    返回 {"decayed": N, "removed": M}。
+    """
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        # 衰减
+        cur.execute(
+            "UPDATE links SET weight = weight * ? WHERE weight >= ?;",
+            (float(decay_factor), float(min_weight)),
+        )
+        decayed = cur.rowcount
+        # 删除低于阈值的
+        cur.execute("DELETE FROM links WHERE weight < ?;", (float(min_weight),))
+        removed = cur.rowcount
+        return {"decayed": decayed, "removed": removed}
+
+
+def decay_memory_weights(decay_factor: float = 0.98, min_weight: float = 0.2) -> Dict[str, int]:
+    """对 user_memory.weight 做衰减。
+
+    被使用过的记忆（use_count > 0）衰减更慢（× decay_factor^0.5），
+    未使用过的正常衰减（× decay_factor）。
+    低于 min_weight 的删除（除了 ocr_correction / ocr_addition，这些是用户明确修正，
+    即使不常用也不该忘）。
+    """
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        # 使用过的：慢衰减
+        cur.execute(
+            "UPDATE user_memory SET weight = weight * ? "
+            "WHERE use_count > 0 AND weight >= ?;",
+            (float(decay_factor ** 0.5), float(min_weight)),
+        )
+        # 未使用过的：正常衰减
+        cur.execute(
+            "UPDATE user_memory SET weight = weight * ? "
+            "WHERE use_count = 0 AND weight >= ?;",
+            (float(decay_factor), float(min_weight)),
+        )
+        # 删除低于阈值的（保留用户明确修正的记忆）
+        cur.execute(
+            "DELETE FROM user_memory WHERE weight < ? "
+            "AND type NOT IN ('ocr_correction', 'ocr_addition', 'correction');",
+            (float(min_weight),),
+        )
+        removed = cur.rowcount
+        return {"removed": removed}
+
+
+def upsert_daily_summary(date_str: str, content: str, note_ids: List[int]) -> int:
+    """写入或更新某天的归纳。返回 id。"""
+    now = _now()
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO daily_summaries (date, content, note_ids, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(date) DO UPDATE SET
+                content = excluded.content,
+                note_ids = excluded.note_ids,
+                updated_at = excluded.updated_at;
+            """,
+            (date_str, content, json.dumps(note_ids), now, now),
+        )
+        row = conn.execute(
+            "SELECT id FROM daily_summaries WHERE date = ?;", (date_str,)
+        ).fetchone()
+        return int(row["id"]) if row else 0
+
+
+def get_daily_summary(date_str: str) -> Optional[Dict[str, Any]]:
+    """获取某天的归纳。"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM daily_summaries WHERE date = ?;", (date_str,)
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if isinstance(d.get("note_ids"), str):
+            try:
+                d["note_ids"] = json.loads(d["note_ids"])
+            except (json.JSONDecodeError, TypeError):
+                d["note_ids"] = []
+        return d
+
+
+def list_recent_daily_summaries(limit: int = 7) -> List[Dict[str, Any]]:
+    """列出最近 N 天的归纳。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM daily_summaries ORDER BY date DESC LIMIT ?;",
+            (int(limit),),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("note_ids"), str):
+                try:
+                    d["note_ids"] = json.loads(d["note_ids"])
+                except (json.JSONDecodeError, TypeError):
+                    d["note_ids"] = []
+            out.append(d)
+        return out

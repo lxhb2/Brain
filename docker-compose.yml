@@ -11,6 +11,10 @@ services:
     image: brain-backend:latest
     container_name: brain-backend
     restart: unless-stopped
+    # 生产环境应仅 expose 不 ports，仅通过 frontend nginx 反代访问：
+    #   expose:
+    #     - "8000"
+    # 当前为方便调试保留 ports，部署到公网时改用 expose。
     ports:
       - "8000:8000"
     volumes:
@@ -27,6 +31,7 @@ services:
       - DB_PATH=/app/data/brain.db
       # 生产环境 worker 数（OCR 是 IO 密集，1 个够用；调高会多占内存）
       - UVICORN_WORKERS=1
+      - TZ=Asia/Shanghai
     # 资源约束：OCR 调外部 API 不耗本地算力，256MB 足够
     deploy:
       resources:

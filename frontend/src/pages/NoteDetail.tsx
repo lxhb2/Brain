@@ -114,12 +114,21 @@ export default function NoteDetail() {
     setReprocessing(true)
     try {
       await api.reprocessNote(note.id)
-      // 轮询等待完成
+      // 轮询等待完成，最多 5 分钟（200 次 × 1.5s），超时提示用户手动重试
+      let polls = 0
+      const MAX_POLLS = 200
       const poll = async () => {
+        polls += 1
         const updated = await api.getNote(note.id)
         setNote(updated)
         if (updated.status === 'processing' || updated.status === 'pending') {
-          setTimeout(poll, 1500)
+          if (polls >= MAX_POLLS) {
+            setReprocessing(false)
+            // 超时：交由用户决定是否再次点击重试
+            alert('OCR 处理超时（>5 分钟），可能 LLM 无响应。可稍后刷新查看，或再次点击重试。')
+          } else {
+            setTimeout(poll, 1500)
+          }
         } else {
           setReprocessing(false)
         }

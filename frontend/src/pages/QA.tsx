@@ -563,13 +563,20 @@ export default function QA() {
 
           {/* 输入区 */}
           <div className="safe-bottom border-t border-white/5 px-3 py-3 md:px-8 md:py-4">
-            <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-void-200/50 px-3 py-2 backdrop-blur-md focus-within:border-flux/30 md:px-4 md:py-2.5">
-              <input
+            <div className="flex items-end gap-2 rounded-xl border border-white/10 bg-void-200/50 px-3 py-2 backdrop-blur-md focus-within:border-flux/30 md:px-4 md:py-2.5">
+              <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && ask()}
-                placeholder="向你的笔记知识库提问…（Agent 可主动检索笔记、学习偏好）"
-                className="flex-1 bg-transparent text-base text-starlight placeholder:text-dust/50 focus:outline-none md:text-sm"
+                onKeyDown={(e) => {
+                  // Enter 发送，Shift+Enter 换行（标准聊天 UX）
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    ask()
+                  }
+                }}
+                rows={1}
+                placeholder="向你的笔记知识库提问…（Enter 发送，Shift+Enter 换行）"
+                className="max-h-32 flex-1 resize-none bg-transparent text-base text-starlight placeholder:text-dust/50 focus:outline-none md:text-sm"
               />
               <button
                 onClick={ask}
