@@ -2,6 +2,8 @@
 FROM node:22-slim AS builder
 
 # 启用 pnpm（固定版本，避免 corepack 拉到不兼容的 latest）
+# 配置 corepack 也走国内镜像，加速 pnpm 本体的下载
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com
 RUN corepack enable && corepack prepare pnpm@9 --activate
 
 # 配置国内 npm 镜像加速依赖安装
@@ -9,7 +11,7 @@ RUN pnpm config set registry https://registry.npmmirror.com
 
 WORKDIR /app
 
-# 先拷依赖清单，利用层缓存
+# 先拷依赖清单，利用层缓存（package.json/pnpm-lock.yaml 没变就直接复用此层，秒级）
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 
 # 安装依赖（pnpm 9 不支持 --no-audit/--no-fund）
@@ -30,6 +32,6 @@ EXPOSE 80
 
 # 健康检查：nginx 自身
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q --spider http://127.0.0.1/ || exit 1
+  CMD wget -q --spider http://127.0.0.1/ || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

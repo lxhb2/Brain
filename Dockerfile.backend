@@ -1,6 +1,10 @@
 # Brain 后端 —— Python FastAPI
 FROM python:3.12-slim
 
+# 配置国内镜像源 + apt 源（可选，可显著加速）
+ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+
 # 系统依赖：PyMuPDF 等需要
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -8,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 先装依赖（利用层缓存）
+# 先装依赖（利用层缓存：requirements.txt 没变就直接复用此层，秒级）
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
