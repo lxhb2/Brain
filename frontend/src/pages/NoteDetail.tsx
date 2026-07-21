@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, RefreshCw, Smartphone, AppWindow, Calendar, Pencil, Save, X, BadgeCheck, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Copy, Check, RefreshCw, Smartphone, AppWindow, Calendar, Pencil, Save, X, BadgeCheck, RotateCcw, Trash2 } from 'lucide-react'
 import { api, type Note } from '@/api/client'
 import { StatusBadge, formatDate } from '@/components/StatusBadge'
 import { cn } from '@/lib/utils'
@@ -191,6 +191,25 @@ export default function NoteDetail() {
     }
   }
 
+  // 删除笔记
+  const [deleting, setDeleting] = useState(false)
+  const deleteNote = async (hard: boolean) => {
+    if (!note) return
+    const tip = hard
+      ? `永久删除笔记 #${note.id}？\n\n将同时删除：\n· 数据库记录（笔记 / links / 缩略图）\n· 物理文件：${note.file_path}\n\n此操作不可撤销。`
+      : `删除笔记 #${note.id}？\n\n将删除数据库记录、links、缩略图，但保留物理文件（由 Syncthing 管理同步）。\n\n此操作不可撤销。`
+    if (!confirm(tip)) return
+    setDeleting(true)
+    try {
+      await api.deleteNote(note.id, hard)
+      navigate('/notes')
+    } catch (e) {
+      alert(`删除失败：${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -257,6 +276,15 @@ export default function NoteDetail() {
               <button onClick={reprocess} disabled={reprocessing} className="btn-ghost px-2 py-1.5 text-xs md:px-3 md:py-2">
                 <RefreshCw className={`h-3.5 w-3.5 ${reprocessing ? 'animate-spin' : ''}`} />
                 <span className="hidden md:inline">{reprocessing ? '重新处理中…' : '重新 OCR'}</span>
+              </button>
+              <button
+                onClick={() => deleteNote(false)}
+                disabled={deleting}
+                title="删除笔记（保留物理文件，由 Syncthing 管理）"
+                className="btn-ghost px-2 py-1.5 text-xs text-dust hover:text-rose md:px-3 md:py-2"
+              >
+                <Trash2 className={`h-3.5 w-3.5 ${deleting ? 'animate-pulse' : ''}`} />
+                <span className="hidden md:inline">{deleting ? '删除中…' : '删除'}</span>
               </button>
             </>
           )}

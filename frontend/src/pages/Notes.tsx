@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Search, NotebookPen, ChevronRight } from 'lucide-react'
+import { Search, NotebookPen, ChevronRight, Trash2 } from 'lucide-react'
 import { api, type Note, type NoteStatus, type NotesListResponse } from '@/api/client'
 import { StatusBadge, shortDate } from '@/components/StatusBadge'
 import { cn } from '@/lib/utils'
@@ -98,7 +98,7 @@ export default function Notes() {
         ) : data && data.items.length > 0 ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 md:gap-4">
             {data.items.map((note) => (
-              <NoteCard key={note.id} note={note} />
+              <NoteCard key={note.id} note={note} onDeleted={fetchNotes} />
             ))}
           </div>
         ) : (
@@ -115,7 +115,22 @@ export default function Notes() {
   )
 }
 
-function NoteCard({ note }: { note: Note }) {
+function NoteCard({ note, onDeleted }: { note: Note; onDeleted: () => void }) {
+  const [deleting, setDeleting] = useState(false)
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!confirm(`删除笔记 #${note.id}「${note.title ?? '未命名'}」？\n\n将删除数据库记录与缩略图，保留物理文件（由 Syncthing 管理）。`)) return
+    setDeleting(true)
+    try {
+      await api.deleteNote(note.id, false)
+      onDeleted()
+    } catch (err) {
+      alert(`删除失败：${err instanceof Error ? err.message : '未知错误'}`)
+    } finally {
+      setDeleting(false)
+    }
+  }
   return (
     <Link
       to={`/notes/${note.id}`}
@@ -133,6 +148,15 @@ function NoteCard({ note }: { note: Note }) {
         <div className="absolute right-2 top-2 rounded-md bg-void-500/70 px-1.5 py-0.5 backdrop-blur-sm">
           <StatusBadge status={note.status} />
         </div>
+        {/* 删除按钮：hover 时显示在缩略图左上 */}
+        <button
+          onClick={handleDelete}
+          disabled={deleting}
+          title="删除笔记"
+          className="absolute left-2 top-2 flex h-7 w-7 items-center justify-center rounded-md bg-void-500/70 text-dust opacity-0 backdrop-blur-sm transition-all hover:bg-rose/80 hover:text-white group-hover:opacity-100 disabled:opacity-50"
+        >
+          <Trash2 className={`h-3.5 w-3.5 ${deleting ? 'animate-pulse' : ''}`} />
+        </button>
       </div>
 
       {/* 信息 */}
