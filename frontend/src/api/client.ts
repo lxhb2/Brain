@@ -65,6 +65,52 @@ export interface QaAskResponse {
   qa_id: number
   memories_used?: MemoryUsed[]
   tools_used?: ToolCall[]
+  card_draft?: CardDraft | null
+}
+
+export interface CardDraft {
+  title: string
+  core_summary: string
+  key_conclusion: string
+  application_scenario: string
+  agent_question: string
+  source_note_ids: number[]
+  qa_id: number | null
+  session_id: string | null
+}
+
+export interface KnowledgeCard {
+  id: number
+  qa_id: number | null
+  session_id: string | null
+  title: string
+  core_summary: string
+  key_conclusion: string
+  application_scenario: string
+  agent_question: string
+  user_answer: string
+  ai_supplement: string
+  source_note_ids: number[]
+  status: string
+  created_at: string
+  updated_at: string
+  links?: CardLink[]
+}
+
+export interface CardLink {
+  source_type: 'card' | 'note'
+  source_id: number
+  target_type: 'card' | 'note'
+  target_id: number
+  weight: number
+  reason: string | null
+}
+
+export interface FinalizeCardResponse {
+  card_id: number
+  verdict: 'correct' | 'needs_supplement' | 'skipped'
+  ai_supplement: string
+  linked_notes: number
 }
 
 export interface ToolCall {
@@ -342,6 +388,28 @@ export const api = {
     return getJSON<GraphData>(`/api/graph?${qs.toString()}`)
   },
   getNeighbors: (id: number) => getJSON<GraphData>(`/api/graph/neighbors/${id}`),
+  // 含知识卡片的混合图谱（节点类型：note | card）
+  getGraphWithCards: (centerCardId?: number) =>
+    getJSON<{
+      nodes: Array<{
+        id: string
+        type: 'note' | 'card'
+        ref_id: number
+        title: string
+        subtitle?: string | null
+        status?: string | null
+        thumbnail_path?: string | null
+        created_at?: string
+      }>
+      edges: Array<{
+        source: string
+        target: string
+        source_type: 'note' | 'card'
+        target_type: 'note' | 'card'
+        weight: number
+        reason: string | null
+      }>
+    }>(`/api/graph/cards${centerCardId ? `?center_card_id=${centerCardId}` : ''}`),
 
   // 问答
   ask: (question: string, sessionId?: string) =>
@@ -383,6 +451,31 @@ export const api = {
       '/api/feedback',
       { qa_id, rating, correction },
     ),
+
+  // —— 知识卡片 ——
+  listCards: (limit = 50, offset = 0, sessionId?: string) => {
+    const qs = new URLSearchParams()
+    qs.set('limit', String(limit))
+    qs.set('offset', String(offset))
+    if (sessionId) qs.set('session_id', sessionId)
+    return getJSON<{ items: KnowledgeCard[]; total: number }>(`/api/cards?${qs.toString()}`)
+  },
+  getCard: (id: number) => getJSON<KnowledgeCard>(`/api/cards/${id}`),
+  finalizeCard: (body: CardDraft & { user_answer?: string }) =>
+    postJSON<FinalizeCardResponse>('/api/cards/finalize', {
+      qa_id: body.qa_id,
+      session_id: body.session_id,
+      title: body.title,
+      core_summary: body.core_summary,
+      key_conclusion: body.key_conclusion,
+      application_scenario: body.application_scenario,
+      agent_question: body.agent_question,
+      user_answer: body.user_answer ?? '',
+      source_note_ids: body.source_note_ids,
+    }),
+  patchCard: (id: number, body: Partial<KnowledgeCard>) =>
+    patchJSON<{ card_id: number; updated: boolean }>(`/api/cards/${id}`, body),
+  deleteCard: (id: number) => deleteJSON<{ deleted: boolean; card_id: number }>(`/api/cards/${id}`),
 
   // 系统
   getStats: () => getJSON<Stats>('/api/stats'),

@@ -214,6 +214,54 @@ def init_db() -> None:
             """
         )
 
+        # —— 知识卡片表：每次 QA 后沉淀的结构化知识卡 ——
+        # 一个卡片对应一次问答，记录核心总结/关键结论/落地场景/Agent 提问/用户回答/AI 补充
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_cards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                qa_id INTEGER,
+                session_id TEXT,
+                title TEXT NOT NULL,
+                core_summary TEXT NOT NULL,
+                key_conclusion TEXT NOT NULL,
+                application_scenario TEXT,
+                agent_question TEXT,
+                user_answer TEXT,
+                ai_supplement TEXT,
+                source_note_ids TEXT,
+                status TEXT DEFAULT 'finalized',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (qa_id) REFERENCES qa_history(id)
+            );
+            """
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cards_session ON knowledge_cards(session_id);")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cards_created ON knowledge_cards(created_at DESC);")
+
+        # —— 卡片-笔记 / 卡片-卡片 链接表 ——
+        # source_type: 'card' | 'note'
+        # target_type: 'card' | 'note'
+        # 与现有 links 表（note-note）解耦，避免侵入原图谱计算
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS card_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id INTEGER NOT NULL,
+                weight REAL DEFAULT 1.0,
+                reason TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(source_type, source_id, target_type, target_id)
+            );
+            """
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_card_links_source ON card_links(source_type, source_id);")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_card_links_target ON card_links(target_type, target_id);")
+
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -1168,3 +1216,190 @@ def list_recent_daily_summaries(limit: int = 7) -> List[Dict[str, Any]]:
                     d["note_ids"] = []
             out.append(d)
         return out
+
+
+# ---------------------------------------------------------------------------
+# 知识卡片 CRUD
+# ---------------------------------------------------------------------------
+def insert_knowledge_card(
+    *,
+    qa_id: Optional[int],
+    session_id: Optional[str],
+    title: str,
+    core_summary: str,
+    key_conclusion: str,
+    application_scenario: str = "",
+    agent_question: str = "",
+    user_answer: str = "",
+    ai_supplement: str = "",
+    source_note_ids: List[int],
+    status: str = "draft",
+) -> Optional[int]:
+    """插入一条知识卡片，返回 id。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        now = _now()
+        cur.execute(
+            """
+            INSERT INTO knowledge_cards
+                (qa_id, session_id, title, core_summary, key_conclusion,
+                 application_scenario, agent_question, user_answer, ai_supplement,
+                 source_note_ids, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (
+                qa_id, session_id, title.strip(), core_summary.strip(),
+                key_conclusion.strip(), application_scenario.strip(),
+                agent_question.strip(), user_answer.strip(), ai_supplement.strip(),
+                json.dumps(source_note_ids), status, now, now,
+            ),
+        )
+        return cur.lastrowid
+
+
+def update_knowledge_card(card_id: int, **fields) -> bool:
+    """更新卡片字段。支持 user_answer/ai_supplement/status/title 等。"""
+    if not fields:
+        return False
+    allowed = {
+        "title", "core_summary", "key_conclusion", "application_scenario",
+        "agent_question", "user_answer", "ai_supplement", "source_note_ids",
+        "status",
+    }
+    sets = []
+    vals: List[Any] = []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        if k == "source_note_ids" and isinstance(v, list):
+            v = json.dumps(v)
+        sets.append(f"{k} = ?")
+        vals.append(v)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    vals.append(_now())
+    vals.append(card_id)
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE knowledge_cards SET {', '.join(sets)} WHERE id = ?;",
+            vals,
+        )
+        return cur.rowcount > 0
+
+
+def get_knowledge_card(card_id: int) -> Optional[Dict[str, Any]]:
+    """按 id 取卡片详情。"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM knowledge_cards WHERE id = ?;", (card_id,)
+        ).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    if isinstance(d.get("source_note_ids"), str):
+        try:
+            d["source_note_ids"] = json.loads(d["source_note_ids"])
+        except (json.JSONDecodeError, TypeError):
+            d["source_note_ids"] = []
+    return d
+
+
+def list_knowledge_cards(
+    limit: int = 50, offset: int = 0, session_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """列出卡片，返回 {items, total}。"""
+    with get_conn() as conn:
+        if session_id:
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM knowledge_cards WHERE session_id = ?;",
+                (session_id,),
+            ).fetchone()["n"]
+            rows = conn.execute(
+                "SELECT * FROM knowledge_cards WHERE session_id = ? "
+                "ORDER BY created_at DESC LIMIT ? OFFSET ?;",
+                (session_id, int(limit), int(offset)),
+            ).fetchall()
+        else:
+            total = conn.execute(
+                "SELECT COUNT(*) AS n FROM knowledge_cards;"
+            ).fetchone()["n"]
+            rows = conn.execute(
+                "SELECT * FROM knowledge_cards ORDER BY created_at DESC LIMIT ? OFFSET ?;",
+                (int(limit), int(offset)),
+            ).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        if isinstance(d.get("source_note_ids"), str):
+            try:
+                d["source_note_ids"] = json.loads(d["source_note_ids"])
+            except (json.JSONDecodeError, TypeError):
+                d["source_note_ids"] = []
+        items.append(d)
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+def delete_knowledge_card(card_id: int) -> bool:
+    """删除卡片，同时级联清理 card_links。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        # 先删链接
+        cur.execute(
+            "DELETE FROM card_links WHERE "
+            "(source_type='card' AND source_id=?) OR "
+            "(target_type='card' AND target_id=?);",
+            (card_id, card_id),
+        )
+        cur.execute("DELETE FROM knowledge_cards WHERE id = ?;", (card_id,))
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# 卡片链接 CRUD（card-note / card-card）
+# ---------------------------------------------------------------------------
+def insert_card_link(
+    *,
+    source_type: str,
+    source_id: int,
+    target_type: str,
+    target_id: int,
+    weight: float = 1.0,
+    reason: str = "",
+) -> bool:
+    """插入一条 card_links，已存在则忽略。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO card_links
+                (source_type, source_id, target_type, target_id, weight, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?);
+            """,
+            (source_type, source_id, target_type, target_id, float(weight),
+             reason.strip(), _now()),
+        )
+        return cur.rowcount > 0
+
+
+def get_card_links_for(card_id: int) -> List[Dict[str, Any]]:
+    """取一个卡片的所有链接（出边 + 入边）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM card_links WHERE "
+            "(source_type='card' AND source_id=?) OR "
+            "(target_type='card' AND target_id=?);",
+            (card_id, card_id),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_card_links() -> List[Dict[str, Any]]:
+    """取全部 card_links（图谱用）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM card_links ORDER BY weight DESC;"
+        ).fetchall()
+    return [dict(r) for r in rows]
+

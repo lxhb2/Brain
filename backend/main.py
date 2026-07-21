@@ -35,6 +35,7 @@ from routes import settings as settings_routes
 from routes import stats as stats_routes
 from routes import system as system_routes
 from routes import upload as upload_routes
+from routes import cards as cards_routes
 from scheduler import start_scheduler, start_worker, stop_scheduler, stop_worker
 from watcher import start_watcher, stop_watcher
 
@@ -154,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_routes.router)
     app.include_router(system_routes.router)
     app.include_router(upload_routes.router)
+    app.include_router(cards_routes.router)
 
     # 根路径重定向到图谱页
     @app.get("/", include_in_schema=False)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Send, ThumbsUp, ThumbsDown, Loader2, Sparkles, FileText, Check, X, Brain, Plus, Trash2, ChevronRight, MessageSquare, Pencil, Wrench } from 'lucide-react'
-import { api, type QaAskResponse, type Citation, type UserMemory, type QaSession, type ToolCall } from '@/api/client'
+import { Send, ThumbsUp, ThumbsDown, Loader2, Sparkles, FileText, Check, X, Brain, Plus, Trash2, ChevronRight, MessageSquare, Pencil, Wrench, Layers, Save } from 'lucide-react'
+import { api, type QaAskResponse, type Citation, type UserMemory, type QaSession, type ToolCall, type CardDraft, type FinalizeCardResponse } from '@/api/client'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
 
@@ -13,6 +13,8 @@ interface ChatMessage {
   feedback?: 'up' | 'down'
   memories_used?: UserMemory[]
   tools_used?: ToolCall[]
+  card_draft?: CardDraft | null
+  card_saved?: boolean
 }
 
 // 生成会话 ID
@@ -50,6 +52,12 @@ export default function QA() {
   const [newMemContent, setNewMemContent] = useState('')
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  // 卡片弹窗 state
+  const [cardModalDraft, setCardModalDraft] = useState<CardDraft | null>(null)
+  const [cardModalQaId, setCardModalQaId] = useState<number | null>(null)
+  const [cardUserAnswer, setCardUserAnswer] = useState('')
+  const [cardSubmitting, setCardSubmitting] = useState(false)
+  const [cardResult, setCardResult] = useState<FinalizeCardResponse | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const { refresh } = useAppStore()
 
@@ -116,6 +124,7 @@ export default function QA() {
           qa_id: res.qa_id,
           memories_used: res.memories_used?.map((mu) => mu.memory),
           tools_used: res.tools_used,
+          card_draft: res.card_draft ?? null,
         },
       ])
       refresh()
@@ -221,6 +230,47 @@ export default function QA() {
       loadMemories()
     } catch {
       /* 忽略 */
+    }
+  }
+
+  // —— 知识卡片 ——
+  // 打开卡片弹窗（接收 assistant 消息里的 card_draft）
+  const openCardModal = (draft: CardDraft, qaId: number | undefined) => {
+    setCardModalDraft(draft)
+    setCardModalQaId(qaId ?? null)
+    setCardUserAnswer('')
+    setCardResult(null)
+  }
+
+  const closeCardModal = () => {
+    setCardModalDraft(null)
+    setCardModalQaId(null)
+    setCardUserAnswer('')
+    setCardResult(null)
+    setCardSubmitting(false)
+  }
+
+  // 提交卡片（带用户答案或跳过）
+  const submitCard = async (skip: boolean = false) => {
+    if (!cardModalDraft) return
+    setCardSubmitting(true)
+    try {
+      const res = await api.finalizeCard({
+        ...cardModalDraft,
+        qa_id: cardModalQaId,
+        user_answer: skip ? '' : cardUserAnswer,
+      })
+      setCardResult(res)
+      // 标记该消息的卡片已存档
+      if (cardModalQaId) {
+        setMessages((m) => m.map((msg) =>
+          msg.qa_id === cardModalQaId ? { ...msg, card_saved: true } : msg
+        ))
+      }
+    } catch (e) {
+      alert(`卡片存档失败：${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setCardSubmitting(false)
     }
   }
 
@@ -526,6 +576,27 @@ export default function QA() {
                         </div>
                       )}
 
+                      {/* 存为知识卡片按钮 */}
+                      {msg.qa_id && msg.card_draft && (
+                        <div className="ml-1">
+                          {msg.card_saved ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-flux/30 bg-flux/10 px-2.5 py-1 font-mono text-[10px] text-flux">
+                              <Layers className="h-3 w-3" />
+                              已存为知识卡片
+                              <Link to="/cards" className="ml-1 underline hover:no-underline">查看</Link>
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => openCardModal(msg.card_draft!, msg.qa_id)}
+                              className="inline-flex items-center gap-1 rounded-full border border-flux/30 bg-flux/10 px-2.5 py-1 font-mono text-[10px] text-flux transition-colors hover:bg-flux/20"
+                            >
+                              <Layers className="h-3 w-3" />
+                              存为知识卡片
+                            </button>
+                          )}
+                        </div>
+                      )}
+
                       {/* 修正输入框 */}
                       {correctingId === msg.qa_id && (
                         <div className="ml-1 flex items-center gap-2 rounded-lg border border-rose/20 bg-rose/5 p-2">
@@ -681,6 +752,151 @@ export default function QA() {
           </aside>
         )}
       </div>
+
+      {/* 知识卡片弹窗 */}
+      {cardModalDraft && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-void-500/80 p-4 backdrop-blur-sm"
+          onClick={closeCardModal}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-flux/30 bg-void-200 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 弹窗头部 */}
+            <div className="flex items-center justify-between border-b border-white/5 px-5 py-3">
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-flux" strokeWidth={1.5} />
+                <h3 className="font-display text-sm text-starlight">存为知识卡片</h3>
+              </div>
+              <button onClick={closeCardModal} className="text-dust hover:text-starlight">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {cardResult ? (
+              /* 存档成功后的结果展示 */
+              <div className="space-y-4 p-5">
+                <div className="flex items-center gap-2 text-flux">
+                  <Check className="h-5 w-5" />
+                  <span className="text-sm font-medium">知识卡片已存档</span>
+                  <span className="font-mono text-[10px] text-dust/60">
+                    #{cardResult.card_id} · 链接 {cardResult.linked_notes} 篇笔记
+                  </span>
+                </div>
+                {cardResult.ai_supplement && (
+                  <div className="rounded-lg border border-amber/30 bg-amber/5 p-3">
+                    <div className="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-amber">
+                      <Sparkles className="h-3 w-3" />
+                      AI 补充
+                      <span className="text-dust/60">
+                        ({cardResult.verdict === 'correct' ? '回答正确' : cardResult.verdict === 'skipped' ? '跳过回答' : '需补充'})
+                      </span>
+                    </div>
+                    <p className="text-sm text-starlight/90 whitespace-pre-wrap">{cardResult.ai_supplement}</p>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <Link
+                    to={`/cards/${cardResult.card_id}`}
+                    className="btn-ghost px-3 py-1.5 text-xs"
+                  >
+                    查看卡片详情
+                  </Link>
+                  <button onClick={closeCardModal} className="btn-primary px-3 py-1.5 text-xs">
+                    完成
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* 草稿编辑 + Agent 提问 */
+              <div className="space-y-4 p-5">
+                {/* 卡片预览 */}
+                <div className="space-y-3">
+                  <div>
+                    <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-dust/60">标题</div>
+                    <div className="text-sm font-medium text-starlight">{cardModalDraft.title}</div>
+                  </div>
+                  <div>
+                    <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-flux/70">核心讲了什么</div>
+                    <div className="text-sm text-starlight/90 whitespace-pre-wrap">{cardModalDraft.core_summary}</div>
+                  </div>
+                  <div>
+                    <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-azure/70">关键结论</div>
+                    <div className="text-sm text-starlight/90 whitespace-pre-wrap">{cardModalDraft.key_conclusion}</div>
+                  </div>
+                  {cardModalDraft.application_scenario && (
+                    <div>
+                      <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-amber/70">落地场景</div>
+                      <div className="text-sm text-starlight/90 whitespace-pre-wrap">{cardModalDraft.application_scenario}</div>
+                    </div>
+                  )}
+                  {cardModalDraft.source_note_ids.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="font-mono text-[10px] text-dust/60">关联笔记：</span>
+                      {cardModalDraft.source_note_ids.map((nid) => (
+                        <Link
+                          key={nid}
+                          to={`/notes/${nid}`}
+                          className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-dust hover:border-azure/30 hover:text-azure"
+                        >
+                          #{nid}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Agent 提问 */}
+                {cardModalDraft.agent_question && (
+                  <div className="rounded-lg border border-flux/30 bg-flux/5 p-3">
+                    <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-flux">
+                      <Sparkles className="h-3 w-3" />
+                      Agent 提问（检验你的理解）
+                    </div>
+                    <p className="text-sm text-starlight">{cardModalDraft.agent_question}</p>
+                    <textarea
+                      value={cardUserAnswer}
+                      onChange={(e) => setCardUserAnswer(e.target.value)}
+                      placeholder="在这里回答（按 Ctrl+Enter 提交，留空跳过由 AI 补充）…"
+                      className="mt-2 w-full rounded-md border border-white/10 bg-void-300/50 px-2.5 py-1.5 text-sm text-starlight placeholder:text-dust/40 focus:border-flux/30 focus:outline-none"
+                      rows={3}
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submitCard(false)
+                      }}
+                    />
+                  </div>
+                )}
+
+                {/* 操作按钮 */}
+                <div className="flex items-center justify-between border-t border-white/5 pt-3">
+                  <button
+                    onClick={() => submitCard(true)}
+                    disabled={cardSubmitting}
+                    className="btn-ghost px-3 py-1.5 text-xs"
+                  >
+                    跳过回答（AI 补充）
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button onClick={closeCardModal} className="btn-ghost px-3 py-1.5 text-xs">
+                      不存档
+                    </button>
+                    <button
+                      onClick={() => submitCard(false)}
+                      disabled={cardSubmitting}
+                      className="btn-primary flex items-center gap-1.5 px-3 py-1.5 text-xs"
+                    >
+                      {cardSubmitting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                      存档卡片
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

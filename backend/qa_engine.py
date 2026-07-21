@@ -49,6 +49,92 @@ _MAX_MEMORIES = 5
 # Agent 单轮最多调用 tool 的次数
 _MAX_TOOL_CALLS = 3
 
+# 知识卡片生成 prompt（QA 完成后异步调用 LLM 生成卡片草稿）
+_CARD_GEN_PROMPT = """你是一名知识整理助手。基于下面这次问答，生成一张"知识卡片"草稿。
+
+**问答内容**：
+- 用户问题：{question}
+- Agent 回答：{answer}
+- 引用的笔记（id 与标题）：{citations}
+
+请按以下结构生成卡片（用 JSON 返回，仅返回 JSON，不要额外解释）：
+
+```json
+{{
+  "title": "卡片标题（5-20字，点明这次问答解决的核心问题）",
+  "core_summary": "核心讲了什么：这1-N份资料解决了什么问题、原资料名称、内容提炼（1-2句话）",
+  "key_conclusion": "关键结论：用户需要记住的核心知识点（1-3条，用换行分隔）",
+  "application_scenario": "能在什么场景下落地使用：具体的应用场景或操作建议（1-2句话）",
+  "agent_question": "向用户提一个检验性问题：考察用户是否真理解了这次问答的核心（一个问题，简短，开放式）"
+}}
+```
+
+要求：
+- title 简洁有信息量，不要用"问答总结"这种泛标题
+- core_summary 必须提到原资料名称（从 citations 里取标题）
+- key_conclusion 是用户"需要记住的"，不是"资料里写了什么"
+- agent_question 不要太刁钻，是检验理解而非考试，比如"如果遇到 X 场景，你会怎么做？"
+- 如果问答里没有可沉淀的知识（如寒暄、报错），返回 {{"skip": true}}"""
+
+
+def _generate_card_draft(
+    question: str,
+    answer: str,
+    citations: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """调用 LLM 生成知识卡片草稿。
+
+    返回 dict（含 title/core_summary/key_conclusion/application_scenario/agent_question），
+    或 {"skip": True}（LLM 判断不值得存档），或 None（调用失败）。
+    """
+    client = _get_client()
+    if client is None:
+        return None
+    cfg = get_config()
+    # 拼接引用笔记信息
+    cit_text = "\n".join(
+        f"- [{c.get('note_id')}] {c.get('title', '(无标题)')}"
+        for c in citations
+    ) or "(本次问答未引用具体笔记)"
+    prompt = _CARD_GEN_PROMPT.format(
+        question=question[:500],
+        answer=answer[:2000],
+        citations=cit_text,
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=800,
+            timeout=30,
+        )
+        raw = resp.choices[0].message.content or ""
+        # 剥离 markdown 代码围栏
+        s = raw.strip()
+        if s.startswith("```"):
+            first_nl = s.find("\n")
+            if first_nl != -1:
+                s = s[first_nl + 1:]
+            if s.endswith("```"):
+                s = s[:-3]
+            s = s.strip()
+        try:
+            data = json.loads(s)
+        except json.JSONDecodeError:
+            logger.warning("卡片草稿 JSON 解析失败: %s", s[:200])
+            return None
+        if data.get("skip"):
+            return {"skip": True}
+        # 必填字段校验
+        if not data.get("title") or not data.get("core_summary") or not data.get("key_conclusion"):
+            logger.warning("卡片草稿缺少必填字段: %s", list(data.keys()))
+            return None
+        return data
+    except Exception as e:
+        logger.warning("生成卡片草稿失败: %s", e)
+        return None
+
 # 工具定义（OpenAI tool calling 格式）
 _TOOLS = [
     {
@@ -477,12 +563,36 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     qa_id = database.insert_qa(
         question=question, answer=answer, citations=citations, session_id=session_id
     )
+
+    # 异步生成知识卡片草稿（不阻塞主流程，失败不影响 QA 结果）
+    card_draft: Optional[Dict[str, Any]] = None
+    try:
+        # 只在有 citations 或 memories 时尝试生成（寒暄类直接跳过）
+        if citations or memories_used:
+            draft = _generate_card_draft(question, answer, citations)
+            if draft and not draft.get("skip"):
+                # 提取引用的 note_id 列表
+                source_note_ids = [c.get("note_id") for c in citations if c.get("note_id")]
+                card_draft = {
+                    "title": draft.get("title", ""),
+                    "core_summary": draft.get("core_summary", ""),
+                    "key_conclusion": draft.get("key_conclusion", ""),
+                    "application_scenario": draft.get("application_scenario", ""),
+                    "agent_question": draft.get("agent_question", ""),
+                    "source_note_ids": source_note_ids,
+                    "qa_id": qa_id,
+                    "session_id": session_id,
+                }
+    except Exception as e:
+        logger.warning("卡片草稿生成失败（不影响主流程）: %s", e)
+
     return {
         "answer": answer,
         "citations": citations,
         "memories_used": memories_used,
         "qa_id": qa_id,
         "tools_used": tools_used,
+        "card_draft": card_draft,
     }
 
 

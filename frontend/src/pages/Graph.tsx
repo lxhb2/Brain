@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import ReactFlow, {
   Background,
   Controls,
@@ -10,13 +11,15 @@ import ReactFlow, {
   applyNodeChanges,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { Network, Loader2, SlidersHorizontal, LayoutGrid } from 'lucide-react'
+import { Network, Loader2, SlidersHorizontal, LayoutGrid, Sparkles } from 'lucide-react'
 import { api, type GraphData } from '@/api/client'
 import { NoteNode, colorForDevice, type NoteNodeData } from '@/components/NoteNode'
 import GraphFilters, { type GraphFiltersState } from '@/components/GraphFilters'
 import NodeDetailDrawer from '@/components/NodeDetailDrawer'
 import { UploadButton } from '@/components/UploadButton'
+import NebulaGraph from '@/components/NebulaGraph'
 import { computeLayout } from '@/lib/layoutGraph'
+import { cn } from '@/lib/utils'
 
 const EDGE_COLOR: Record<string, string> = {
   semantic: '#22D3EE',
@@ -294,9 +297,91 @@ function GraphCanvas() {
 }
 
 export default function Graph() {
+  const [view, setView] = useState<'notes' | 'nebula'>('notes')
+  const [searchParams] = useSearchParams()
+  // URL 参数 ?center=card:123 或 ?center=note:456
+  const centerParam = searchParams.get('center')
+
+  // 如果 URL 带 center 参数，自动切到星云视图
+  useEffect(() => {
+    if (centerParam && centerParam.startsWith('card:')) {
+      setView('nebula')
+    }
+  }, [centerParam])
+
   return (
-    <ReactFlowProvider>
-      <GraphCanvas />
-    </ReactFlowProvider>
+    <div className="flex h-full flex-col">
+      {/* 视图切换 Tab */}
+      <div className="flex items-center gap-1 border-b border-white/5 px-3 py-2">
+        <button
+          onClick={() => setView('notes')}
+          className={cn(
+            'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-all',
+            view === 'notes'
+              ? 'bg-flux/10 text-flux'
+              : 'text-dust hover:text-starlight'
+          )}
+        >
+          <Network className="h-3.5 w-3.5" strokeWidth={1.5} />
+          笔记图谱
+        </button>
+        <button
+          onClick={() => setView('nebula')}
+          className={cn(
+            'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-all',
+            view === 'nebula'
+              ? 'bg-flux/10 text-flux'
+              : 'text-dust hover:text-starlight'
+          )}
+        >
+          <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+          星云视图（含知识卡片）
+        </button>
+        {centerParam && (
+          <span className="ml-2 font-mono text-[10px] text-flux/70">
+            中心：{centerParam}
+          </span>
+        )}
+      </div>
+
+      <div className="relative flex-1 overflow-hidden">
+        {view === 'notes' ? (
+          <ReactFlowProvider>
+            <GraphCanvas />
+          </ReactFlowProvider>
+        ) : (
+          <NebulaCanvas centerNodeId={centerParam || undefined} />
+        )}
+      </div>
+    </div>
   )
+}
+
+// 星云视图容器：拉取含卡片的混合图谱
+function NebulaCanvas({ centerNodeId }: { centerNodeId?: string }) {
+  const [data, setData] = useState<{ nodes: any[]; edges: any[] } | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    // 如果 centerNodeId 是 card:123，传 center_card_id=123
+    let cardId: number | undefined
+    if (centerNodeId && centerNodeId.startsWith('card:')) {
+      cardId = Number(centerNodeId.split(':')[1])
+    }
+    api
+      .getGraphWithCards(cardId)
+      .then((g) => setData(g))
+      .finally(() => setLoading(false))
+  }, [centerNodeId])
+
+  if (loading || !data) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-flux/60" />
+      </div>
+    )
+  }
+
+  return <NebulaGraph data={data} centerNodeId={centerNodeId} />
 }
