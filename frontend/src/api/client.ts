@@ -273,14 +273,6 @@ async function patchJSON<T>(url: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
-async function deleteJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url, { method: 'DELETE' })
-  if (!res.ok) {
-    throw new Error(`DELETE ${url} 失败：${res.status}`)
-  }
-  return res.json() as Promise<T>
-}
-
 async function putJSON<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: 'PUT',
