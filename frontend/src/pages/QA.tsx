@@ -24,6 +24,7 @@ const MEMORY_TYPE_LABEL: Record<UserMemory['type'], string> = {
   fact: '事实',
   correction: '修正',
   term: '术语',
+  ocr_correction: 'OCR 修正',
 }
 
 export default function QA() {
@@ -393,6 +394,7 @@ export default function QA() {
                   <option value="fact">事实</option>
                   <option value="correction">修正</option>
                   <option value="term">术语</option>
+                  <option value="ocr_correction">OCR 修正</option>
                 </select>
                 <input
                   value={newMemContent}

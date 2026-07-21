@@ -181,19 +181,29 @@ def _parse_structured(raw: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 _OCR_PROMPT = """你是一名专业的手写笔记 OCR 与结构化助手。请仔细识别图片中的所有手写内容，要求：
 
-1. **完整准确地转录**所有手写文字，包括公式、符号、图表标注、箭头说明等。
+1. **完整准确地转录**所有手写文字，包括公式、符号、图表标注等。
 2. 保留原文的段落结构与层次（标题、列表、缩进）。
 3. 数学公式用 LaTeX 语法（行内 $...$，独立块 $$...$$）。
 4. 表格用 Markdown 表格语法。
 5. 无法识别的字用 □ 占位，不要瞎猜。
 6. 若有多张图，按页顺序输出，页与页之间用 `---PAGE---` 分隔。
 
+**手写元素语义标注**（重要）：
+- **箭头指向**：手写箭头连接两个概念时，用 `[→: 起点指向终点]` 标注。
+  例：知识 → 实践 写成 `[→: 知识指向实践]`
+- **划线删除**：被划掉（删除线）的内容用 markdown 删除线：`~~删除的字~~`。
+  保留原字以便追溯，但用删除线标记为已删除。
+- **小字批注**：行间或旁边的批注、补充说明，用 `[批注: 批注内容]` 标注。
+  批注应就近放在被批注的段落后面。
+- **下划线/重点标记**：用下划线的重点字词用 `[重点: 内容]` 标注。
+- **圈选/方框**：被圈起来或方框包围的关键字用 `[圈选: 内容]` 标注。
+
 识别完成后，再用同样的 JSON 格式返回结构化字段：
 
 ```json
 {
   "title": "简短标题（5-15字，概括主题）",
-  "ocr_text": "完整识别的文本（含公式/表格的 markdown）",
+  "ocr_text": "完整识别的文本（含公式/表格/语义标签的 markdown）",
   "summary": "1-3 句摘要，提炼核心知识点",
   "keywords": ["关键词1", "关键词2", ...]
 }
@@ -285,18 +295,25 @@ def _call_vision_single(client, model_id: str, images: List[str],
     if page_idx and total_pages:
         prompt = f"""你是一名专业的手写笔记 OCR 与结构化助手。这是多页文档的第 {page_idx}/{total_pages} 页，请仔细识别本页的所有手写内容，要求：
 
-1. **完整准确地转录**本页所有手写文字，包括公式、符号、图表标注、箭头说明等。
+1. **完整准确地转录**本页所有手写文字，包括公式、符号、图表标注等。
 2. 保留原文的段落结构与层次（标题、列表、缩进）。
 3. 数学公式用 LaTeX 语法（行内 $...$，独立块 $$...$$）。
 4. 表格用 Markdown 表格语法。
 5. 无法识别的字用 □ 占位，不要瞎猜。
+
+**手写元素语义标注**（重要）：
+- **箭头指向**：手写箭头连接两个概念时，用 `[→: 起点指向终点]` 标注。
+- **划线删除**：被划掉的内容用 `~~删除的字~~` 标注，保留原字。
+- **小字批注**：行间或旁边的批注用 `[批注: 批注内容]` 标注，就近放。
+- **下划线重点**：用 `[重点: 内容]` 标注。
+- **圈选方框**：用 `[圈选: 内容]` 标注。
 
 识别完成后，用 JSON 返回本页的结构化字段：
 
 ```json
 {{
   "title": "本页标题（5-15字）",
-  "ocr_text": "本页完整识别的文本",
+  "ocr_text": "本页完整识别的文本（含语义标签）",
   "summary": "本页 1-2 句摘要",
   "keywords": ["本页关键词1", "本页关键词2"]
 }}
@@ -314,6 +331,10 @@ def _call_vision_single(client, model_id: str, images: List[str],
             "type": "image_url",
             "image_url": {"url": f"data:image/png;base64,{img_b64}"},
         })
+    # 注入用户习惯修正示例（如果有）
+    correction_hint = _build_ocr_correction_hint()
+    if correction_hint:
+        content.insert(0, {"type": "text", "text": correction_hint})
     resp = client.chat.completions.create(
         model=model_id,
         messages=[{"role": "user", "content": content}],
@@ -412,10 +433,11 @@ def _should_try_baidu_first() -> bool:
 def _try_baidu_ocr(file_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """调用百度 OCR 处理文件，返回结构化结果。
 
-    百度 OCR 只返回纯文本，title/summary/keywords 由本地规则提取：
-    - title: 第一行前 30 字符
-    - summary: 前 100 字符
-    - keywords: 空（百度不提供关键词）
+    流程：
+    1. 百度 OCR 识别手写文字（精度高，但不提供结构化字段）
+    2. 用 Kimi 等文本模型对百度返回的纯文本做二次结构化
+       （不传图，便宜），生成 title/summary/keywords + 语义标签增强
+    3. Kimi 失败时回退到本地规则派生（保证可用性）
     """
     if not file_path or not os.path.exists(file_path):
         logger.warning("百度 OCR：文件路径无效或不存在 %s", file_path)
@@ -440,7 +462,15 @@ def _try_baidu_ocr(file_path: Optional[str]) -> Optional[Dict[str, Any]]:
             logger.warning("百度 OCR 返回空文本")
             return None
         text = text.strip()
-        # 简单结构化
+
+        # 二次结构化：让 Kimi 基于纯文本生成 title/summary/keywords + 语义标签
+        structured = _refine_baidu_text_with_llm(text)
+        if structured:
+            # 用 LLM 结果，但 ocr_text 保留 LLM 增强后的版本（带语义标签）
+            return structured
+
+        # LLM 失败：回退到本地规则
+        logger.warning("百度 OCR 二次结构化失败，回退到本地规则")
         first_line = text.split("\n", 1)[0].strip()[:30]
         title = first_line or "(百度 OCR 笔记)"
         summary = text[:100].replace("\n", " ")
@@ -453,6 +483,93 @@ def _try_baidu_ocr(file_path: Optional[str]) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning("百度 OCR 失败: %s", e)
         return None
+
+
+# 让 LLM 对百度 OCR 返回的纯文本做二次结构化（不传图，便宜）
+_REFINE_PROMPT_TEMPLATE = """你是一名手写笔记结构化助手。下面是百度 OCR 识别出的手写笔记纯文本（可能含识别误差）。
+请基于这段文本生成结构化字段，要求：
+
+1. **修正明显的 OCR 错误**（如错字、断词），但不要改变原意。
+2. **标注手写元素**（如果原文里有迹象）：
+   - 被划线删除的内容用 markdown 删除线：`~~删除的字~~`
+   - 行间/旁批小字批注用：`[批注: 批注内容]`
+   - 箭头指向关系用：`[→: 起点指向终点]`
+3. 保留原文段落结构（标题、列表、缩进）。
+4. 数学公式用 LaTeX，表格用 Markdown 表格。
+
+返回 JSON：
+```json
+{{
+  "title": "5-15字标题",
+  "ocr_text": "完整文本（含上述语义标签）",
+  "summary": "1-3 句摘要",
+  "keywords": ["关键词1", "关键词2"]
+}}
+```
+
+仅返回 JSON 对象，不要额外解释。
+
+百度 OCR 文本：
+```
+{raw_text}
+```
+"""
+
+
+def _refine_baidu_text_with_llm(raw_text: str) -> Optional[Dict[str, Any]]:
+    """用 Kimi 等文本模型对百度 OCR 纯文本做二次结构化。
+
+    不传图，只传文本，所以便宜快速。
+    """
+    client = _get_client()
+    if client is None:
+        return None
+    cfg = get_config()
+    try:
+        # 注入用户习惯修正（如果有的话）
+        correction_hint = _build_ocr_correction_hint()
+        prompt = _REFINE_PROMPT_TEMPLATE.format(raw_text=raw_text[:6000])
+        if correction_hint:
+            prompt = correction_hint + "\n\n" + prompt
+
+        resp = client.chat.completions.create(
+            model=cfg.LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=4000,
+            timeout=60,
+        )
+        raw = resp.choices[0].message.content or ""
+        result = _parse_structured(raw)
+        if result and result.get("ocr_text"):
+            logger.info("百度 OCR 文本经 LLM 二次结构化成功")
+            return result
+        logger.warning("LLM 二次结构化返回内容无法解析")
+        return None
+    except Exception as e:
+        logger.warning("LLM 二次结构化失败: %s", e)
+        return None
+
+
+def _build_ocr_correction_hint() -> str:
+    """从 user_memory 表读取用户习惯修正示例，拼成 prompt 提示。
+
+    检索 type='ocr_correction' 的记忆，取权重 top 5，
+    让 LLM 在 OCR 时避免类似错误。
+    """
+    try:
+        corrections = database.list_memory(type="ocr_correction", limit=5)
+        if not corrections:
+            return ""
+        lines = ["以下是用户过去修正过的 OCR 错误示例，请避免类似错误："]
+        for c in corrections:
+            content = c.get("content", "")
+            weight = c.get("weight", 0.5)
+            lines.append(f"- {content}  (权重 {weight:.2f})")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning("读取 ocr_correction 记忆失败: %s", e)
+        return ""
 
 
 def _embed_text(client, text: str) -> List[float]:

@@ -109,6 +109,8 @@ def edit_note(note_id: int, body: EditNoteRequest):
 
     - 标记 manually_edited=1，后续重新 OCR 不会覆盖人工修改
     - 默认重算 embedding 和候选链接（保持图谱同步）
+    - 若 ocr_text 被修改，自动提取差异行存为 ocr_correction 记忆
+      （下次 OCR 同类笔记时，LLM 会拿到这些"用户习惯修正"作为提示）
     - 若不需要重算（例如只改 typo），传 recompute_embedding=False
     """
     note = database.get_note(note_id)
@@ -129,6 +131,25 @@ def edit_note(note_id: int, body: EditNoteRequest):
 
     if not any(k != "manually_edited" for k in updates):
         raise HTTPException(status_code=400, detail="未提供任何要更新的字段")
+
+    # 提取 OCR 修正差异并存为记忆（反馈学习）
+    correction_info = {"extracted": 0, "memories_created": 0}
+    if body.ocr_text is not None:
+        old_ocr = note.get("ocr_text") or ""
+        new_ocr = body.ocr_text
+        corrections = _extract_ocr_corrections(old_ocr, new_ocr)
+        correction_info["extracted"] = len(corrections)
+        for old_line, new_line in corrections:
+            try:
+                database.insert_memory(
+                    type="ocr_correction",
+                    content=f'"{old_line}" → "{new_line}"',
+                    source="manual_edit",
+                    weight=0.7,
+                )
+                correction_info["memories_created"] += 1
+            except Exception:
+                pass  # 记忆存储失败不影响编辑
 
     # 写入数据库（先不更新 embedding）
     database.update_note_fields(
@@ -173,8 +194,54 @@ def edit_note(note_id: int, body: EditNoteRequest):
         "updated": True,
         "manually_edited": True,
         "embedding": embedding_info,
+        "corrections": correction_info,
         "note": database.get_note(note_id),
     }
+
+
+def _extract_ocr_corrections(old_text: str, new_text: str) -> List[tuple]:
+    """对比新旧 OCR 文本，提取被修改的行（difflib）。
+
+    返回 [(old_line, new_line), ...] 列表，仅保留实际有意义的修改
+    （剔除空白差异、过短差异、纯顺序调整等）。
+    """
+    import difflib
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+
+    corrections: List[tuple] = []
+    # 用 SequenceMatcher 按行对比
+    matcher = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "replace":
+            # 替换：old[i1:i2] 被替换为 new[j1:j2]
+            old_chunk = "\n".join(old_lines[i1:i2]).strip()
+            new_chunk = "\n".join(new_lines[j1:j2]).strip()
+            # 只保留有意义的修改：长度 2-100 字符，且不是纯空白差异
+            if (2 <= len(old_chunk) <= 100
+                    and 2 <= len(new_chunk) <= 100
+                    and old_chunk != new_chunk):
+                # 相似度阈值：避免完全无关的修改
+                ratio = difflib.SequenceMatcher(None, old_chunk, new_chunk).ratio()
+                if 0.3 <= ratio <= 0.95:
+                    corrections.append((old_chunk, new_chunk))
+        elif tag == "delete":
+            # 删除行：不存为修正（删除的内容不需要学习）
+            pass
+        elif tag == "insert":
+            # 新增行：不存为修正（纯新增内容不是 OCR 错误）
+            pass
+
+    # 去重（同一条修正可能被多次提取）
+    seen = set()
+    unique = []
+    for old_c, new_c in corrections:
+        key = (old_c, new_c)
+        if key not in seen:
+            seen.add(key)
+            unique.append((old_c, new_c))
+    # 限制最多 5 条，避免一次编辑产生过多记忆
+    return unique[:5]
 
 
 @router.post("/{note_id}/clear-manual-edit")
