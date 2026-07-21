@@ -90,7 +90,7 @@ export interface MemoryUsed {
 
 export interface UserMemory {
   id: number
-  type: 'preference' | 'fact' | 'correction' | 'term' | 'ocr_correction'
+  type: 'preference' | 'fact' | 'correction' | 'term' | 'ocr_correction' | 'ocr_addition'
   content: string
   source: string | null
   weight: number

@@ -26,6 +26,7 @@ const MEMORY_TYPE_LABEL: Record<UserMemory['type'], string> = {
   correction: '修正',
   term: '术语',
   ocr_correction: 'OCR 修正',
+  ocr_addition: 'OCR 补充',
 }
 
 const TOOL_LABEL: Record<string, string> = {
@@ -607,6 +608,7 @@ export default function QA() {
                   <option value="correction">修正</option>
                   <option value="term">术语</option>
                   <option value="ocr_correction">OCR 修正</option>
+                  <option value="ocr_addition">OCR 补充</option>
                 </select>
                 <input
                   value={newMemContent}
@@ -657,7 +659,7 @@ export default function QA() {
                         {m.source === 'feedback' ? '反馈学习' :
                          m.source === 'manual' ? '手动' :
                          m.source === 'auto_learn' ? 'Agent 学习' :
-                         m.source === 'manual_edit' ? 'OCR 修正' : m.source}
+                         m.source === 'manual_edit' ? (m.type === 'ocr_addition' ? 'OCR 补充' : 'OCR 修正') : m.source}
                       </span>
                     </div>
                   </div>

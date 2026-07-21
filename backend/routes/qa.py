@@ -80,7 +80,7 @@ def delete_session(session_id: str):
 class MemoryCreate(BaseModel):
     """新增记忆请求。"""
 
-    type: str = Field(..., description="preference / fact / correction / term / ocr_correction")
+    type: str = Field(..., description="preference / fact / correction / term / ocr_correction / ocr_addition")
     content: str = Field(..., min_length=1)
     weight: float = Field(0.5, ge=0.0, le=1.0)
 
@@ -107,8 +107,8 @@ def list_memories(
 @router.post("/memories")
 def add_memory(body: MemoryCreate):
     """手动添加一条长期记忆。"""
-    if body.type not in ("preference", "fact", "correction", "term", "ocr_correction"):
-        raise HTTPException(400, "type 必须是 preference/fact/correction/term/ocr_correction")
+    if body.type not in ("preference", "fact", "correction", "term", "ocr_correction", "ocr_addition"):
+        raise HTTPException(400, "type 必须是 preference/fact/correction/term/ocr_correction/ocr_addition")
     memory_id = qa_engine.add_manual_memory(body.type, body.content, body.weight)
     return {"memory_id": memory_id, "memory": database.get_memory(memory_id)}
 

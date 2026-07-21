@@ -132,8 +132,9 @@ def edit_note(note_id: int, body: EditNoteRequest):
     if not any(k != "manually_edited" for k in updates):
         raise HTTPException(status_code=400, detail="未提供任何要更新的字段")
 
-    # 提取 OCR 修正差异并存为记忆（反馈学习）
-    correction_info = {"extracted": 0, "memories_created": 0}
+    # 提取 OCR 修正/补充差异并存为记忆（反馈学习）
+    correction_info = {"extracted": 0, "memories_created": 0,
+                       "corrections": 0, "additions": 0}
     if body.ocr_text is not None:
         old_ocr = note.get("ocr_text") or ""
         new_ocr = body.ocr_text
@@ -141,23 +142,33 @@ def edit_note(note_id: int, body: EditNoteRequest):
         correction_info["extracted"] = len(corrections)
         # 复用一个 OpenAI client 生成 embedding（避免每条都重新创建）
         mem_client = ocr_processor._get_client()
-        for old_line, new_line in corrections:
+        for entry in corrections:
+            mem_type, old_line, new_line = entry  # (type, old, new)
             try:
                 embedding = None
-                content = f'"{old_line}" → "{new_line}"'
+                if mem_type == "ocr_correction":
+                    content = f'"{old_line}" → "{new_line}"'
+                    weight = 0.7
+                else:  # ocr_addition
+                    content = f'用户补充：{new_line}'
+                    weight = 0.6  # 补充内容权重略低，因为是用户习惯而非确定修正
                 if mem_client is not None:
                     try:
                         embedding = ocr_processor._embed_text(mem_client, content)
                     except Exception:
                         pass
                 database.insert_memory(
-                    type="ocr_correction",
+                    type=mem_type,
                     content=content,
                     source="manual_edit",
-                    weight=0.7,
+                    weight=weight,
                     embedding=embedding,
                 )
                 correction_info["memories_created"] += 1
+                if mem_type == "ocr_correction":
+                    correction_info["corrections"] += 1
+                else:
+                    correction_info["additions"] += 1
             except Exception:
                 pass  # 记忆存储失败不影响编辑
 
@@ -212,8 +223,11 @@ def edit_note(note_id: int, body: EditNoteRequest):
 def _extract_ocr_corrections(old_text: str, new_text: str) -> List[tuple]:
     """对比新旧 OCR 文本，提取被修改的行（difflib）。
 
-    返回 [(old_line, new_line), ...] 列表，仅保留实际有意义的修改
-    （剔除空白差异、过短差异、纯顺序调整等）。
+    返回 [(type, old_line, new_line), ...] 列表，其中：
+      - type='ocr_correction'：替换型修改（错字修正、改写）
+      - type='ocr_addition'：新增行（用户补充的批注、思考、扩展内容）
+
+    仅保留实际有意义的修改（剔除空白差异、过短差异、纯顺序调整等）。
     """
     import difflib
     old_lines = old_text.splitlines()
@@ -234,24 +248,30 @@ def _extract_ocr_corrections(old_text: str, new_text: str) -> List[tuple]:
                 # 相似度阈值：避免完全无关的修改
                 ratio = difflib.SequenceMatcher(None, old_chunk, new_chunk).ratio()
                 if 0.3 <= ratio <= 0.95:
-                    corrections.append((old_chunk, new_chunk))
-        elif tag == "delete":
-            # 删除行：不存为修正（删除的内容不需要学习）
-            pass
+                    corrections.append(("ocr_correction", old_chunk, new_chunk))
         elif tag == "insert":
-            # 新增行：不存为修正（纯新增内容不是 OCR 错误）
+            # 新增行：用户主动补充的内容（批注/思考/扩展）
+            # 这类内容反映用户的笔记习惯，应该作为 ocr_addition 记忆学习
+            new_chunk = "\n".join(new_lines[j1:j2]).strip()
+            # 只保留有意义的新增内容：长度 2-200 字符
+            if 2 <= len(new_chunk) <= 200:
+                # 剔除纯标点/纯数字等无意义新增
+                if any(c.isalpha() for c in new_chunk):
+                    corrections.append(("ocr_addition", "", new_chunk))
+        elif tag == "delete":
+            # 删除行：不存为记忆（删除的内容不需要学习）
             pass
 
     # 去重（同一条修正可能被多次提取）
     seen = set()
     unique = []
-    for old_c, new_c in corrections:
-        key = (old_c, new_c)
+    for entry in corrections:
+        key = (entry[0], entry[1], entry[2])
         if key not in seen:
             seen.add(key)
-            unique.append((old_c, new_c))
-    # 限制最多 5 条，避免一次编辑产生过多记忆
-    return unique[:5]
+            unique.append(entry)
+    # 限制最多 8 条（修正 5 + 新增 3），避免一次编辑产生过多记忆
+    return unique[:8]
 
 
 @router.post("/{note_id}/clear-manual-edit")

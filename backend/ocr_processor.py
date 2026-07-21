@@ -552,23 +552,44 @@ def _refine_baidu_text_with_llm(raw_text: str) -> Optional[Dict[str, Any]]:
 
 
 def _build_ocr_correction_hint() -> str:
-    """从 user_memory 表读取用户习惯修正示例，拼成 prompt 提示。
+    """从 user_memory 表读取用户习惯，拼成 prompt 提示。
 
-    检索 type='ocr_correction' 的记忆，取权重 top 5，
-    让 LLM 在 OCR 时避免类似错误。
+    同时检索两类记忆：
+      - type='ocr_correction'：用户修正过的 OCR 错误（错字、改写）
+      - type='ocr_addition'：用户过去补充的内容（批注、思考、扩展）
+
+    让 LLM 在 OCR 时：
+      1. 避免类似 OCR 错误
+      2. 保留用户习惯的补充内容模式（如喜欢在末尾加思考）
     """
     try:
+        parts = []
+
+        # 1. 修正示例（top 5）
         corrections = database.list_memory(type="ocr_correction", limit=5)
-        if not corrections:
+        if corrections:
+            lines = ["以下是用户过去修正过的 OCR 错误示例，请避免类似错误："]
+            for c in corrections:
+                content = c.get("content", "")
+                weight = c.get("weight", 0.5)
+                lines.append(f"- {content}  (权重 {weight:.2f})")
+            parts.append("\n".join(lines))
+
+        # 2. 补充内容示例（top 3）
+        additions = database.list_memory(type="ocr_addition", limit=3)
+        if additions:
+            lines = ["以下是用户过去在笔记中补充过的内容示例，请参考用户的笔记习惯（如喜欢补充思考、批注等）："]
+            for a in additions:
+                content = a.get("content", "")
+                weight = a.get("weight", 0.5)
+                lines.append(f"- {content}  (权重 {weight:.2f})")
+            parts.append("\n".join(lines))
+
+        if not parts:
             return ""
-        lines = ["以下是用户过去修正过的 OCR 错误示例，请避免类似错误："]
-        for c in corrections:
-            content = c.get("content", "")
-            weight = c.get("weight", 0.5)
-            lines.append(f"- {content}  (权重 {weight:.2f})")
-        return "\n".join(lines)
+        return "\n\n".join(parts)
     except Exception as e:
-        logger.warning("读取 ocr_correction 记忆失败: %s", e)
+        logger.warning("读取 OCR 习惯记忆失败: %s", e)
         return ""
 
 

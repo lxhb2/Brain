@@ -87,7 +87,7 @@ _TOOLS = [
                     },
                     "type": {
                         "type": "string",
-                        "enum": ["preference", "fact", "correction", "term", "ocr_correction"],
+                        "enum": ["preference", "fact", "correction", "term", "ocr_correction", "ocr_addition"],
                         "description": "记忆类型过滤（可选）"
                     }
                 },
@@ -163,6 +163,7 @@ def _build_memory_context(memories: List[Dict[str, Any]]) -> str:
             "correction": "用户修正",
             "term": "常用术语",
             "ocr_correction": "OCR 修正",
+            "ocr_addition": "OCR 补充",
         }.get(mtype, mtype)
         lines.append(f"[{label}] {content}")
     return "\n".join(lines) + "\n"
