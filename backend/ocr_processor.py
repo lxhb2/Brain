@@ -33,7 +33,9 @@ from config import get_config
 
 logger = logging.getLogger("brain.ocr")
 
-SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg")
+SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx")
+# 文本型扩展名（不经过 OCR vision，直接抽文本 → LLM 结构化）
+TEXT_EXTS = (".txt", ".md", ".markdown", ".docx")
 
 
 # ---------------------------------------------------------------------------
@@ -86,18 +88,94 @@ def file_to_images(path: str) -> List[str]:
         raise ValueError(f"不支持的文件类型: {ext}")
 
 
+def extract_text_from_file(path: str) -> str:
+    """从文本型文件中提取纯文本。
+
+    支持：
+      - .txt / .md / .markdown：直接读取（自动尝试 UTF-8 / GBK）
+      - .docx：用 python-docx 提取段落 + 表格文本
+
+    返回纯文本字符串；失败抛异常。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".txt", ".md", ".markdown"):
+        # 优先 UTF-8，回退 GBK（Windows 记事本常见）
+        for enc in ("utf-8", "utf-8-sig", "gbk", "latin-1"):
+            try:
+                with open(path, "r", encoding=enc) as f:
+                    return f.read()
+            except UnicodeDecodeError:
+                continue
+        raise RuntimeError("无法解码文本文件（尝试 UTF-8/GBK 均失败）")
+    if ext == ".docx":
+        try:
+            from docx import Document
+        except ImportError as e:  # pragma: no cover
+            raise RuntimeError("python-docx 未安装，无法处理 .docx") from e
+        doc = Document(path)
+        parts: List[str] = []
+        # 段落
+        for p in doc.paragraphs:
+            if p.text:
+                parts.append(p.text)
+        # 表格
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if row_text:
+                    parts.append(row_text)
+        return "\n".join(parts)
+    raise ValueError(f"不支持的文本型文件: {ext}")
+
+
 def generate_thumbnail(path: str, out_path: str, width: int = 200, quality: int = 80) -> str:
     """生成缩略图（200px 宽，JPEG 质量 80）。返回输出路径。
 
-    PDF 取第一页；图片直接缩放。失败时返回空字符串，调用方应处理。
+    - PDF：第一页渲染
+    - 图片：直接缩放
+    - 文本型（txt/md/docx）：用 PIL 把前若干行文本绘制到白色画布上
     """
     try:
-        from PIL import Image
+        from PIL import Image, ImageDraw, ImageFont
     except ImportError as e:  # pragma: no cover
         raise RuntimeError("Pillow 未安装，无法生成缩略图") from e
 
     ext = os.path.splitext(path)[1].lower()
     try:
+        if ext in TEXT_EXTS:
+            # 文本型缩略图：白底黑字，绘制前 ~24 行
+            try:
+                text = extract_text_from_file(path)
+            except Exception as e:
+                logger.warning("文本缩略图抽取失败 %s: %s", path, e)
+                return ""
+            lines = [ln for ln in text.splitlines() if ln.strip()][:24]
+            if not lines:
+                lines = ["(空文件)"]
+            # 画布尺寸：宽 400px（再缩放到 width），行高 18px
+            canvas_w = 400
+            line_h = 20
+            canvas_h = max(120, line_h * (len(lines) + 2))
+            img = Image.new("RGB", (canvas_w, canvas_h), color=(255, 255, 255))
+            draw = ImageDraw.Draw(img)
+            # 使用默认字体（部署环境通常无中文字体，退化到 bitmap）
+            try:
+                font = ImageFont.truetype("DejaVuSans.ttf", 14)
+            except Exception:
+                font = ImageFont.load_default()
+            y = line_h
+            for ln in lines:
+                # 截断过长行
+                draw.text((10, y), ln[:50], fill=(30, 30, 30), font=font)
+                y += line_h
+            # 缩放到目标宽度
+            ratio = width / float(canvas_w)
+            new_h = max(1, int(canvas_h * ratio))
+            thumb = img.resize((width, new_h), Image.LANCZOS)
+            os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+            thumb.save(out_path, "JPEG", quality=quality)
+            return out_path
+
         if ext == ".pdf":
             import fitz
             doc = fitz.open(path)
@@ -117,7 +195,7 @@ def generate_thumbnail(path: str, out_path: str, width: int = 200, quality: int 
         ratio = width / float(img.width) if img.width else 1.0
         new_height = max(1, int(img.height * ratio))
         thumb = img.resize((width, new_height), Image.LANCZOS)
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         thumb.save(out_path, "JPEG", quality=quality)
         return out_path
     except Exception as e:
@@ -611,6 +689,106 @@ def _demo_structured(file_path: str) -> Dict[str, Any]:
     }
 
 
+# 文本型结构化 prompt：用于 txt/md/docx 抽取后的 LLM 结构化
+_TEXT_STRUCT_PROMPT = """你是一名笔记结构化助手。下面是用户上传的文本型笔记（TXT/Markdown/Word 抽取后的纯文本）。
+请基于这段文本生成结构化字段，要求：
+
+1. **完整保留原文**，不要删减或改写内容（ocr_text 字段必须是原文全文）。
+2. 推断一个简洁的标题（5-20 字），如果原文开头有明显的 `#` 标题或首行短句，优先用作标题。
+3. 生成 1-2 句话的摘要。
+4. 提取 3-8 个关键词。
+5. 保留原文的 Markdown 语法（标题、列表、代码块、表格等），不要转换格式。
+6. 如果原文里有明显的重点标注（如下划线、加粗、高亮），用 `[重点: 内容]` 标注。
+
+用 JSON 返回：
+
+```json
+{{
+  "title": "标题",
+  "ocr_text": "原文全文",
+  "summary": "1-2 句摘要",
+  "keywords": ["关键词1", "关键词2"]
+}}
+```
+
+仅返回 JSON，不要任何额外解释。"""
+
+
+def _structured_from_text(client, text: str, model_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """对纯文本做 LLM 结构化（不传图，便宜）。
+
+    用于 TXT/Markdown/DOCX 等文本型文件：先本地抽文本，再让 LLM 生成
+    title/summary/keywords。原文本作为 ocr_text 保留。
+
+    Args:
+        client: OpenAI 客户端
+        text: 抽取出的纯文本
+        model_id: 指定模型 id（None 则用 primary LLM 模型）
+
+    Returns:
+        结构化 dict，失败返回 None。
+    """
+    if not text or not text.strip():
+        logger.warning("文本结构化：内容为空")
+        return None
+    cfg = get_config()
+    # 选择模型：优先用指定的，否则用 LLM_MODEL（文本任务用通用模型即可）
+    if model_id and model_id != "baidu":
+        m = settings_store.get_ocr_model_by_id(model_id)
+        model_name = m["model"] if m else cfg.LLM_MODEL
+    else:
+        model_name = cfg.LLM_MODEL
+    # 截断超长文本（避免 token 爆炸）
+    max_chars = 24000
+    truncated = text[:max_chars]
+    if len(text) > max_chars:
+        logger.info("文本结构化：原文过长（%d 字），截断到 %d 字", len(text), max_chars)
+    # 注入用户习惯
+    hint = _build_ocr_correction_hint()
+    sys_prompt = (_TEXT_STRUCT_PROMPT + "\n\n" + hint) if hint else _TEXT_STRUCT_PROMPT
+    try:
+        resp = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"以下是笔记原文：\n\n{truncated}"},
+            ],
+            temperature=0.1,
+            max_tokens=8000,
+            timeout=120,
+        )
+        raw = resp.choices[0].message.content or ""
+        result = _parse_structured(raw)
+        if result and result.get("ocr_text"):
+            return result
+        logger.warning("文本结构化返回内容无法解析")
+        return None
+    except Exception as e:
+        logger.warning("文本结构化 LLM 调用失败: %s", e)
+        return None
+
+
+def _fallback_text_structured(text: str, file_path: str) -> Dict[str, Any]:
+    """LLM 不可用时的本地兜底结构化。
+
+    - title：取第一行非空文本（截断 30 字）
+    - summary：取前 100 字
+    - keywords：空
+    - ocr_text：原文
+    """
+    base = os.path.splitext(os.path.basename(file_path))[0]
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    first_line = lines[0][:30] if lines else base
+    title = first_line.lstrip("#").strip() or base
+    summary = text[:100].replace("\n", " ").strip()
+    return {
+        "title": title,
+        "ocr_text": text,
+        "summary": summary,
+        "keywords": [],
+    }
+
+
 def _demo_embedding(seed: int = 42) -> List[float]:
     """Demo 模式：生成确定性的随机 1536 维向量。
 
@@ -691,27 +869,59 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
     is_demo = client is None
 
     try:
-        images = file_to_images(file_path)
-        if not images:
-            raise RuntimeError("未能从文件提取到任何图像")
+        # 文本型文件分支：直接抽文本 → LLM 结构化（不走 vision 模型）
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext in TEXT_EXTS:
+            logger.info("处理文本型笔记 %s (%s)", note_id, file_path)
+            raw_text = extract_text_from_file(file_path)
+            if not raw_text or not raw_text.strip():
+                raise RuntimeError("文本文件内容为空")
 
-        used_model_id: Optional[str] = None
-        if is_demo:
-            logger.info("[demo] 处理笔记 %s (%s)", note_id, file_path)
-            structured = _demo_structured(file_path)
-            embedding = _demo_embedding(seed=note_id)
+            used_model_id: Optional[str] = None
+            if is_demo:
+                structured = _fallback_text_structured(raw_text, file_path)
+                embedding = _demo_embedding(seed=note_id)
+            else:
+                structured = _structured_from_text(client, raw_text, model_id=model_id)
+                if structured:
+                    # 文本型用 LLM_MODEL，标记为 "text-llm" 便于区分
+                    used_model_id = "text-llm"
+                else:
+                    # LLM 失败：回退到本地结构化
+                    logger.warning("文本型 LLM 结构化失败，回退到本地规则")
+                    structured = _fallback_text_structured(raw_text, file_path)
+                    used_model_id = "text-fallback"
+                embed_input = (
+                    (structured.get("title") or "")
+                    + "\n"
+                    + (structured.get("summary") or "")
+                    + "\n"
+                    + (structured.get("ocr_text") or "")
+                )
+                embedding = _embed_text(client, embed_input)
         else:
-            structured, used_model_id = _ocr_structured(client, images, model_id=model_id, file_path=file_path)
-            if not structured:
-                raise RuntimeError("LLM 返回内容无法解析为 JSON（所有候选模型均失败）")
-            embed_input = (
-                (structured.get("title") or "")
-                + "\n"
-                + (structured.get("summary") or "")
-                + "\n"
-                + (structured.get("ocr_text") or "")
-            )
-            embedding = _embed_text(client, embed_input)
+            # 图像型文件分支（PDF/PNG/JPG）：走原有 vision OCR 路径
+            images = file_to_images(file_path)
+            if not images:
+                raise RuntimeError("未能从文件提取到任何图像")
+
+            used_model_id = None
+            if is_demo:
+                logger.info("[demo] 处理笔记 %s (%s)", note_id, file_path)
+                structured = _demo_structured(file_path)
+                embedding = _demo_embedding(seed=note_id)
+            else:
+                structured, used_model_id = _ocr_structured(client, images, model_id=model_id, file_path=file_path)
+                if not structured:
+                    raise RuntimeError("LLM 返回内容无法解析为 JSON（所有候选模型均失败）")
+                embed_input = (
+                    (structured.get("title") or "")
+                    + "\n"
+                    + (structured.get("summary") or "")
+                    + "\n"
+                    + (structured.get("ocr_text") or "")
+                )
+                embedding = _embed_text(client, embed_input)
 
         # 缩略图
         cfg = get_config()

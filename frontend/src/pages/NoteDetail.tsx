@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, RefreshCw, Smartphone, AppWindow, Calendar, Pencil, Save, X, BadgeCheck, RotateCcw, Trash2 } from 'lucide-react'
+import { ArrowLeft, Copy, Check, RefreshCw, Smartphone, AppWindow, Calendar, Pencil, Save, X, BadgeCheck, RotateCcw, Trash2, FileText, Download } from 'lucide-react'
 import { api, type Note } from '@/api/client'
 import { StatusBadge, formatDate } from '@/components/StatusBadge'
 import { cn } from '@/lib/utils'
@@ -76,6 +76,71 @@ function renderOcrRichText(text: string) {
     parts.push(text.slice(lastIndex))
   }
   return parts
+}
+
+/**
+ * 根据文件扩展名渲染原始文件预览。
+ * - PDF：iframe 内嵌
+ * - 图片（png/jpg/jpeg）：img 标签
+ * - 文本型（txt/md/markdown）：iframe 以 text/plain 展示，浏览器原生支持
+ * - Word（docx）：浏览器无法内嵌，显示下载按钮 + 提示
+ */
+function _renderOriginalFile(note: Note) {
+  const fp = (note.file_path || '').toLowerCase()
+  const url = api.noteFileUrl(note.id)
+  if (fp.endsWith('.pdf')) {
+    return <iframe src={url} title="原始文件" className="h-[70vh] w-full bg-white md:h-[80vh]" />
+  }
+  if (fp.endsWith('.png') || fp.endsWith('.jpg') || fp.endsWith('.jpeg')) {
+    return <img src={url} alt={note.title ?? ''} className="block w-full" />
+  }
+  if (fp.endsWith('.txt') || fp.endsWith('.md') || fp.endsWith('.markdown')) {
+    // iframe 直接加载文本文件，浏览器以 text/plain 渲染
+    return (
+      <iframe
+        src={url}
+        title="原始文件"
+        className="h-[70vh] w-full bg-[#1a1a1a] text-sm md:h-[80vh]"
+      />
+    )
+  }
+  if (fp.endsWith('.docx')) {
+    return (
+      <div className="flex h-[60vh] flex-col items-center justify-center gap-4 p-8 text-center md:h-[70vh]">
+        <FileText className="h-12 w-12 text-amber" strokeWidth={1.2} />
+        <div>
+          <div className="font-display text-base text-starlight">Word 文档</div>
+          <div className="mt-1 font-mono text-[11px] text-dust">
+            浏览器无法内嵌预览 .docx，请下载查看
+          </div>
+        </div>
+        <a
+          href={url}
+          download
+          className="flex items-center gap-1.5 rounded-lg border border-flux/30 bg-flux/10 px-4 py-2 text-xs text-flux transition-colors hover:bg-flux/20"
+        >
+          <Download className="h-3.5 w-3.5" />
+          下载 .docx
+        </a>
+        <div className="mt-2 max-w-xs font-mono text-[10px] text-dust/60">
+          文本内容已自动抽取并展示在右侧「OCR 文本」面板
+        </div>
+      </div>
+    )
+  }
+  // 兜底：未知类型，提供下载链接
+  return (
+    <div className="flex h-[40vh] items-center justify-center p-8 text-center">
+      <a
+        href={url}
+        download
+        className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs text-starlight hover:bg-white/10"
+      >
+        <Download className="h-3.5 w-3.5" />
+        下载原始文件
+      </a>
+    </div>
+  )
 }
 
 export default function NoteDetail() {
@@ -372,11 +437,7 @@ export default function NoteDetail() {
           </div>
           <div className="flex-1 overflow-auto bg-void-500/30 p-3 md:p-6">
             <div className="mx-auto overflow-hidden rounded-lg border border-white/10 bg-void-300 shadow-panel">
-              {note.file_path?.toLowerCase().endsWith('.pdf') ? (
-                <iframe src={api.noteFileUrl(note.id)} title="原始文件" className="h-[70vh] w-full bg-white md:h-[80vh]" />
-              ) : (
-                <img src={api.noteFileUrl(note.id)} alt={note.title ?? ''} className="block w-full" />
-              )}
+              {_renderOriginalFile(note)}
             </div>
           </div>
         </div>

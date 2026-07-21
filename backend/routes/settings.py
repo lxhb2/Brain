@@ -27,7 +27,7 @@ from config import get_config
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
-SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg")
+SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx")
 
 
 # ---------------------------------------------------------------------------

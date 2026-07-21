@@ -28,7 +28,7 @@ logger = logging.getLogger("brain.scheduler")
 # 国内时区（避免依赖 zoneinfo）
 _TZ_SHANGHAI = timezone(timedelta(hours=8))
 
-SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg")
+SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx")
 
 # 全局处理队列与状态
 _processing_queue: "queue.Queue[int]" = queue.Queue()

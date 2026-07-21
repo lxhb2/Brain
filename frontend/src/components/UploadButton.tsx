@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Camera, ImagePlus, Loader2, X, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Camera, ImagePlus, FileText, Loader2, X, CheckCircle2, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/api/client'
 import { useDeviceDetect } from '@/hooks/useDeviceDetect'
@@ -13,13 +13,14 @@ interface UploadResult {
 export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
+  const docInputRef = useRef<HTMLInputElement>(null)
   const [open, setOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [results, setResults] = useState<UploadResult[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const device = useDeviceDetect()
 
-  const handleFiles = async (files: FileList | null) => {
+  const handleFiles = async (files: FileList | null, app: string = 'camera') => {
     if (!files || files.length === 0) return
     setUploading(true)
     setError(null)
@@ -31,7 +32,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
       const res = await api.uploadNotes(
         Array.from(files),
         devName,
-        'camera',
+        app,
       )
       setResults(
         res.files.map((f) => ({
@@ -52,6 +53,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
       // 清空 input 以便重复选择同一文件
       if (fileInputRef.current) fileInputRef.current.value = ''
       if (cameraInputRef.current) cameraInputRef.current.value = ''
+      if (docInputRef.current) docInputRef.current.value = ''
     }
   }
 
@@ -74,7 +76,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
         accept="image/png,image/jpeg,application/pdf,.pdf"
         multiple
         className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => handleFiles(e.target.files, 'gallery')}
       />
       <input
         ref={cameraInputRef}
@@ -83,7 +85,15 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
         capture="environment"
         multiple
         className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => handleFiles(e.target.files, 'camera')}
+      />
+      <input
+        ref={docInputRef}
+        type="file"
+        accept=".txt,.md,.markdown,.docx,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        multiple
+        className="hidden"
+        onChange={(e) => handleFiles(e.target.files, 'document')}
       />
 
       {/* 上传面板 */}
@@ -91,7 +101,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm md:items-center">
           <div className="w-full max-w-md rounded-t-2xl border border-white/10 bg-void-200 p-5 shadow-2xl md:rounded-2xl">
             <div className="mb-4 flex items-center justify-between">
-              <h3 className="font-display text-base text-starlight">上传手写笔记</h3>
+              <h3 className="font-display text-base text-starlight">上传笔记</h3>
               <button
                 onClick={() => {
                   setOpen(false)
@@ -137,7 +147,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
                   </div>
                 ))}
                 <div className="rounded-lg bg-white/5 px-3 py-2 text-center text-[11px] text-dust">
-                  文件已上传，watcher 将自动 OCR 入库，约 10-30 秒后刷新图谱可见
+                  文件已上传，正在自动处理（图片走 OCR，文档走文本抽取），约 10-30 秒后刷新可见
                 </div>
                 <button
                   onClick={() => {
@@ -185,12 +195,22 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
                 >
                   <ImagePlus className="h-5 w-5 text-azure" strokeWidth={1.5} />
                   <div>
-                    <div className="text-sm text-starlight">选择文件</div>
-                    <div className="font-mono text-[10px] text-dust">支持图片（PNG/JPG）和 PDF 文档</div>
+                    <div className="text-sm text-starlight">选择图片 / PDF</div>
+                    <div className="font-mono text-[10px] text-dust">支持 PNG / JPG / PDF（走 OCR 识别）</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => docInputRef.current?.click()}
+                  className="flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3.5 text-left transition-all hover:bg-white/10 active:scale-[0.98]"
+                >
+                  <FileText className="h-5 w-5 text-amber" strokeWidth={1.5} />
+                  <div>
+                    <div className="text-sm text-starlight">上传文档</div>
+                    <div className="font-mono text-[10px] text-dust">支持 TXT / Markdown / Word（.docx）</div>
                   </div>
                 </button>
                 <div className="pt-2 text-center font-mono text-[10px] text-dust/70">
-                  上传后自动 OCR · 支持 PNG / JPG / PDF · 单文件最大 50MB
+                  图片走 OCR · 文档走文本抽取 · 单文件最大 50MB
                 </div>
               </div>
             )}

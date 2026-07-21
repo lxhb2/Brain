@@ -26,7 +26,7 @@ logger = logging.getLogger("brain.routes.upload")
 router = APIRouter(prefix="/api", tags=["upload"])
 
 # 允许的文件扩展名（与 watcher 保持一致）
-ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
+ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx"}
 # 单文件大小上限：50MB（手写笔记图片足够）
 MAX_FILE_SIZE = 50 * 1024 * 1024
 # 默认上传目录（相对 SYNCED_NOTES_ROOT）
@@ -49,11 +49,11 @@ def _ensure_upload_dir(device: str = "", app: str = "") -> str:
 def _safe_filename(name: str) -> str:
     """生成安全的文件名，避免特殊字符和中文乱码。"""
     if not name:
-        return f"upload_{int(time.time())}.jpg"
+        return f"upload_{int(time.time())}.txt"
     # 取扩展名
     _, ext = os.path.splitext(name)
     if ext.lower() not in ALLOWED_EXTS:
-        ext = ".jpg"
+        ext = ".txt"
     # 用时间戳 + 随机数生成唯一文件名
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"upload_{ts}_{int(time.time()*1000) % 10000}{ext.lower()}"

@@ -22,7 +22,7 @@ from config import get_watch_dirs_runtime
 
 logger = logging.getLogger("brain.watcher")
 
-SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg")
+SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx")
 # 去抖窗口（秒）
 _DEBOUNCE_SECONDS = 2.0
 
