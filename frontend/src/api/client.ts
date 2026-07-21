@@ -64,6 +64,23 @@ export interface QaAskResponse {
   citations: Citation[]
   qa_id: number
   memories_used?: MemoryUsed[]
+  tools_used?: ToolCall[]
+}
+
+export interface ToolCall {
+  name: string
+  arguments: Record<string, unknown>
+  result_preview: string
+}
+
+export interface QaSession {
+  session_id: string
+  title: string | null
+  created_at: string
+  updated_at: string
+  msg_count: number
+  last_question?: string | null
+  last_answer?: string | null
 }
 
 export interface MemoryUsed {
@@ -330,6 +347,17 @@ export const api = {
     if (sessionId) qs.set('session_id', sessionId)
     return getJSON<{ items: QaHistoryItem[] }>(`/api/qa/history?${qs.toString()}`)
   },
+
+  // 会话管理
+  listSessions: (limit = 50) => {
+    const qs = new URLSearchParams()
+    qs.set('limit', String(limit))
+    return getJSON<{ items: QaSession[]; total: number }>(`/api/qa/sessions?${qs.toString()}`)
+  },
+  renameSession: (sessionId: string, title: string) =>
+    patchJSON<{ session_id: string; title: string }>(`/api/qa/sessions/${encodeURIComponent(sessionId)}`, { title }),
+  deleteSession: (sessionId: string) =>
+    deleteJSON<{ deleted: boolean; session_id: string }>(`/api/qa/sessions/${encodeURIComponent(sessionId)}`),
 
   // 长期记忆
   listMemories: (type?: string) => {

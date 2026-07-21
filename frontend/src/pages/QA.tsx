@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Send, ThumbsUp, ThumbsDown, Loader2, Sparkles, FileText, Check, X, Brain, Plus, Trash2, ChevronRight } from 'lucide-react'
-import { api, type QaAskResponse, type Citation, type UserMemory } from '@/api/client'
+import { Send, ThumbsUp, ThumbsDown, Loader2, Sparkles, FileText, Check, X, Brain, Plus, Trash2, ChevronRight, MessageSquare, Pencil, Wrench } from 'lucide-react'
+import { api, type QaAskResponse, type Citation, type UserMemory, type QaSession, type ToolCall } from '@/api/client'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
 
@@ -12,9 +12,10 @@ interface ChatMessage {
   qa_id?: number
   feedback?: 'up' | 'down'
   memories_used?: UserMemory[]
+  tools_used?: ToolCall[]
 }
 
-// 生成会话 ID（页面加载时生成一次，新会话按钮可重置）
+// 生成会话 ID
 function genSessionId() {
   return `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
@@ -27,6 +28,12 @@ const MEMORY_TYPE_LABEL: Record<UserMemory['type'], string> = {
   ocr_correction: 'OCR 修正',
 }
 
+const TOOL_LABEL: Record<string, string> = {
+  search_notes: '检索笔记',
+  search_memory: '检索记忆',
+  add_memory: '学习记忆',
+}
+
 export default function QA() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
@@ -35,27 +42,52 @@ export default function QA() {
   const [correction, setCorrection] = useState('')
   const [sessionId, setSessionId] = useState<string>(genSessionId)
   const [memories, setMemories] = useState<UserMemory[]>([])
+  const [sessions, setSessions] = useState<QaSession[]>([])
   const [showMemoryPanel, setShowMemoryPanel] = useState(false)
+  const [showSessionsPanel, setShowSessionsPanel] = useState(true)
   const [newMemType, setNewMemType] = useState<UserMemory['type']>('preference')
   const [newMemContent, setNewMemContent] = useState('')
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const { refresh } = useAppStore()
 
-  // 加载历史（按时间正序，user/assistant 成对插入）
+  // 初始加载：会话列表 + 记忆列表
   useEffect(() => {
-    api.getQaHistory(50, 0).then((res) => {
-      const paired: ChatMessage[] = []
-      res.items
-        .slice()
-        .reverse()
-        .forEach((h) => {
-          paired.push({ role: 'user', content: h.question })
-          paired.push({ role: 'assistant', content: h.answer, citations: h.citations ?? [], qa_id: h.id })
-        })
-      setMessages(paired)
-    })
+    loadSessions()
     loadMemories()
   }, [])
+
+  // 加载某个会话的历史消息
+  const loadSessionHistory = useCallback(async (sid: string) => {
+    try {
+      const res = await api.getQaHistory(100, 0, sid)
+      const paired: ChatMessage[] = []
+      // 按 created_at 升序返回（后端已按 ASC 排序）
+      res.items.forEach((h) => {
+        paired.push({ role: 'user', content: h.question })
+        paired.push({
+          role: 'assistant',
+          content: h.answer,
+          citations: h.citations ?? [],
+          qa_id: h.id,
+        })
+      })
+      setMessages(paired)
+    } catch {
+      setMessages([])
+    }
+  }, [])
+
+  // 选中会话
+  const selectSession = useCallback((sid: string) => {
+    setSessionId(sid)
+    loadSessionHistory(sid)
+  }, [loadSessionHistory])
+
+  const loadSessions = () => {
+    api.listSessions(50).then((res) => setSessions(res.items)).catch(() => {})
+  }
 
   const loadMemories = () => {
     api.listMemories().then((res) => setMemories(res.items)).catch(() => {})
@@ -81,12 +113,17 @@ export default function QA() {
           content: res.answer,
           citations: res.citations,
           qa_id: res.qa_id,
-          memories_used: res.memories_used?.map((m) => m.memory),
+          memories_used: res.memories_used?.map((mu) => mu.memory),
+          tools_used: res.tools_used,
         },
       ])
       refresh()
-      // 如果问答触发了记忆学习（点赞/点踩），刷新记忆列表
-      // 实际学习发生在 feedback 时，这里不需要立即刷新
+      // 问答后刷新会话列表（新会话会写入 qa_sessions 表）
+      loadSessions()
+      // 如果 Agent 调用了 add_memory，刷新记忆列表
+      if (res.tools_used?.some((t) => t.name === 'add_memory')) {
+        loadMemories()
+      }
     } catch (e) {
       setMessages((m) => [
         ...m,
@@ -102,7 +139,6 @@ export default function QA() {
     try {
       await api.submitFeedback(qa_id, rating)
       refresh()
-      // 反馈可能触发记忆学习，刷新记忆列表
       loadMemories()
     } catch {
       /* 忽略反馈失败 */
@@ -116,18 +152,52 @@ export default function QA() {
       setCorrectingId(null)
       setCorrection('')
       refresh()
-      // 修正后立即刷新记忆列表（新增了一条 correction 记忆）
       loadMemories()
     } catch {
       /* 忽略 */
     }
   }
 
-  // 新建会话（清空消息，重置 session_id）
+  // 新建会话
   const newSession = () => {
-    if (messages.length > 0 && !confirm('开始新会话？当前对话历史仍可在历史记录中查看。')) return
     setMessages([])
     setSessionId(genSessionId())
+    setEditingSessionId(null)
+  }
+
+  // 重命名会话
+  const startRenameSession = (s: QaSession) => {
+    setEditingSessionId(s.session_id)
+    setEditingTitle(s.title || '')
+  }
+
+  const submitRenameSession = async () => {
+    if (!editingSessionId || !editingTitle.trim()) {
+      setEditingSessionId(null)
+      return
+    }
+    try {
+      await api.renameSession(editingSessionId, editingTitle.trim())
+      loadSessions()
+    } catch {
+      /* 忽略 */
+    }
+    setEditingSessionId(null)
+  }
+
+  // 删除会话
+  const deleteSession = async (sid: string) => {
+    if (!confirm('删除该会话？该会话的所有问答记录将永久删除。')) return
+    try {
+      await api.deleteSession(sid)
+      // 如果删的是当前会话，开新会话
+      if (sid === sessionId) {
+        newSession()
+      }
+      loadSessions()
+    } catch {
+      /* 忽略 */
+    }
   }
 
   // 添加记忆
@@ -161,17 +231,31 @@ export default function QA() {
           <Sparkles className="h-4 w-4 text-flux" strokeWidth={1.5} />
           <h1 className="font-display text-base text-starlight md:text-xl">智能问答</h1>
           <span className="hidden font-mono text-[10px] text-dust/60 md:inline">
-            会话: {sessionId.slice(0, 14)}
+            Agent · 长期记忆
           </span>
         </div>
         <div className="flex items-center gap-1">
           <button
             onClick={newSession}
             className="btn-ghost px-2 py-1.5 text-xs"
-            title="开始新会话（清空当前对话）"
+            title="开始新会话"
           >
             <Plus className="h-3.5 w-3.5" />
             <span className="hidden md:inline">新会话</span>
+          </button>
+          <button
+            onClick={() => setShowSessionsPanel(!showSessionsPanel)}
+            className={cn(
+              'btn-ghost flex items-center gap-1.5 px-2 py-1.5 text-xs',
+              showSessionsPanel && 'text-flux',
+            )}
+            title="会话列表"
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            <span className="hidden md:inline">会话</span>
+            {sessions.length > 0 && (
+              <span className="rounded bg-flux/20 px-1 text-[10px] text-flux">{sessions.length}</span>
+            )}
           </button>
           <button
             onClick={() => setShowMemoryPanel(!showMemoryPanel)}
@@ -191,6 +275,115 @@ export default function QA() {
       </div>
 
       <div className="flex min-h-0 flex-1">
+        {/* 左侧：会话列表 */}
+        {showSessionsPanel && (
+          <aside className="flex w-60 flex-col border-r border-white/5 bg-void-300/30 backdrop-blur-xl md:w-72">
+            <div className="border-b border-white/5 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-4 w-4 text-azure" strokeWidth={1.5} />
+                <h2 className="font-display text-sm text-starlight">会话</h2>
+              </div>
+              <p className="mt-1 text-[11px] text-dust/70">
+                所有会话共用同一长期记忆库。点击切换历史会话。
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-2">
+              {/* 当前会话（未发送任何消息的） */}
+              {sessions.length === 0 && (
+                <div
+                  className={cn(
+                    'mb-1.5 cursor-pointer rounded-md border px-2.5 py-2',
+                    'border-flux/30 bg-flux/5'
+                  )}
+                >
+                  <div className="truncate text-xs text-starlight/90">(新会话)</div>
+                  <div className="mt-0.5 font-mono text-[9px] text-dust/50">未发送消息</div>
+                </div>
+              )}
+
+              {sessions.map((s) => {
+                const isCurrent = s.session_id === sessionId
+                const isEditing = editingSessionId === s.session_id
+                return (
+                  <div
+                    key={s.session_id}
+                    className={cn(
+                      'group mb-1.5 cursor-pointer rounded-md border px-2.5 py-2 transition-all',
+                      isCurrent
+                        ? 'border-flux/40 bg-flux/10'
+                        : 'border-white/5 bg-white/[0.02] hover:border-azure/20 hover:bg-azure/5'
+                    )}
+                    onClick={() => !isEditing && selectSession(s.session_id)}
+                  >
+                    {isEditing ? (
+                      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          value={editingTitle}
+                          onChange={(e) => setEditingTitle(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') submitRenameSession()
+                            if (e.key === 'Escape') setEditingSessionId(null)
+                          }}
+                          className="flex-1 rounded border border-flux/30 bg-void-200/50 px-1.5 py-0.5 text-xs text-starlight focus:outline-none"
+                          autoFocus
+                        />
+                        <button onClick={submitRenameSession} className="text-flux hover:opacity-80">
+                          <Check className="h-3 w-3" />
+                        </button>
+                        <button onClick={() => setEditingSessionId(null)} className="text-dust hover:text-rose">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex items-start gap-1.5">
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-xs font-medium text-starlight/90">
+                              {s.title || '(未命名会话)'}
+                            </div>
+                            {s.last_question && (
+                              <div className="mt-0.5 truncate text-[10px] text-dust/60">
+                                {s.last_question}
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); startRenameSession(s) }}
+                              className="text-dust hover:text-flux"
+                              title="重命名"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteSession(s.session_id) }}
+                              className="text-dust hover:text-rose"
+                              title="删除"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2 font-mono text-[9px] text-dust/50">
+                          <span>{s.msg_count} 条</span>
+                          <span>·</span>
+                          <span>{new Date(s.updated_at).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="border-t border-white/5 px-3 py-2 text-[10px] text-dust/50">
+              <ChevronRight className="mr-1 inline h-3 w-3" />
+              所有会话共用同一长期记忆库
+            </div>
+          </aside>
+        )}
+
         {/* 主对话区 */}
         <div className="flex min-w-0 flex-1 flex-col">
           <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-3 py-4 md:space-y-6 md:px-8 md:py-6">
@@ -206,7 +399,7 @@ export default function QA() {
                     例如：「我最近关于需求分析的笔记有哪些？」「甲方需求图里提到哪些关键点？」
                   </p>
                   <p className="mt-2 max-w-md text-xs text-dust/60">
-                    支持多轮对话（同会话内）和长期记忆。点赞/点踩+修正会让 Brain 越用越懂你。
+                    Agent 可主动检索笔记、检索记忆、学习用户偏好。点赞/点踩+修正会让 Brain 越用越懂你。
                   </p>
                 </div>
               </div>
@@ -227,6 +420,25 @@ export default function QA() {
                         </div>
                         <p className="whitespace-pre-wrap text-sm leading-relaxed text-starlight/90">{msg.content}</p>
                       </div>
+
+                      {/* Agent 调用的工具 */}
+                      {msg.tools_used && msg.tools_used.length > 0 && (
+                        <div className="ml-1 flex flex-wrap items-center gap-1">
+                          <span className="font-mono text-[10px] uppercase tracking-wider text-amber/70">
+                            <Wrench className="mr-1 inline h-3 w-3" />Agent 工具
+                          </span>
+                          {msg.tools_used.map((t, idx) => (
+                            <span
+                              key={idx}
+                              className="rounded border border-amber/20 bg-amber/5 px-1.5 py-0.5 text-[10px] text-amber/80"
+                              title={t.result_preview}
+                            >
+                              {TOOL_LABEL[t.name] || t.name}
+                              {t.name === 'add_memory' && ' ✓'}
+                            </span>
+                          ))}
+                        </div>
+                      )}
 
                       {/* 引用的长期记忆 */}
                       {msg.memories_used && msg.memories_used.length > 0 && (
@@ -342,7 +554,7 @@ export default function QA() {
               <div className="flex justify-start">
                 <div className="glass-panel flex items-center gap-2 rounded-2xl rounded-bl-sm px-4 py-3">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-flux" />
-                  <span className="font-mono text-xs text-dust">检索知识库与记忆中…</span>
+                  <span className="font-mono text-xs text-dust">Agent 检索笔记与记忆中…</span>
                 </div>
               </div>
             )}
@@ -355,7 +567,7 @@ export default function QA() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && ask()}
-                placeholder="向你的笔记知识库提问…"
+                placeholder="向你的笔记知识库提问…（Agent 可主动检索笔记、学习偏好）"
                 className="flex-1 bg-transparent text-base text-starlight placeholder:text-dust/50 focus:outline-none md:text-sm"
               />
               <button
@@ -369,7 +581,7 @@ export default function QA() {
           </div>
         </div>
 
-        {/* 记忆侧栏 */}
+        {/* 右侧：记忆侧栏 */}
         {showMemoryPanel && (
           <aside className="flex w-72 flex-col border-l border-white/5 bg-void-300/30 backdrop-blur-xl md:w-80">
             <div className="border-b border-white/5 px-4 py-3">
@@ -378,7 +590,7 @@ export default function QA() {
                 <h2 className="font-display text-sm text-starlight">长期记忆</h2>
               </div>
               <p className="mt-1 text-[11px] text-dust/70">
-                Brain 会从你的反馈中学习，并在此处累积。点赞/点踩+修正可触发学习。
+                所有会话共用同一记忆库。Agent 会主动学习用户偏好。
               </p>
             </div>
 
@@ -441,17 +653,21 @@ export default function QA() {
                     <div className="mt-1 flex items-center gap-2 font-mono text-[9px] text-dust/50">
                       <span>权重 {m.weight.toFixed(2)}</span>
                       {m.use_count > 0 && <span>· 用过 {m.use_count} 次</span>}
-                      <span className="ml-auto">{m.source === 'feedback' ? '反馈学习' : m.source === 'manual' ? '手动' : m.source}</span>
+                      <span className="ml-auto">
+                        {m.source === 'feedback' ? '反馈学习' :
+                         m.source === 'manual' ? '手动' :
+                         m.source === 'auto_learn' ? 'Agent 学习' :
+                         m.source === 'manual_edit' ? 'OCR 修正' : m.source}
+                      </span>
                     </div>
                   </div>
                 ))
               )}
             </div>
 
-            {/* 底部说明 */}
             <div className="border-t border-white/5 px-3 py-2 text-[10px] text-dust/50">
               <ChevronRight className="mr-1 inline h-3 w-3" />
-              问答时会自动检索与问题相似的记忆注入上下文
+              问答时自动检索记忆注入上下文
             </div>
           </aside>
         )}

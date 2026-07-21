@@ -21,10 +21,11 @@ class AskRequest(BaseModel):
 
 @router.post("/ask")
 def ask(req: AskRequest):
-    """对用户问题执行 RAG 问答。
+    """对用户问题执行 RAG 问答（轻量 Agent）。
 
     - 可传 session_id 支持多轮对话（同 session 的最近 5 轮历史会注入 prompt）
     - 自动检索 user_memory 长期记忆并注入 prompt
+    - LLM 可主动调 search_notes / search_memory / add_memory 工具
     """
     return qa_engine.ask(req.question, session_id=req.session_id)
 
@@ -40,17 +41,53 @@ def history(
 
 
 # ---------------------------------------------------------------------------
+# 会话管理
+# ---------------------------------------------------------------------------
+class SessionRenameRequest(BaseModel):
+    """会话重命名请求。"""
+
+    title: str = Field(..., min_length=1, max_length=60)
+
+
+@router.get("/sessions")
+def list_sessions(limit: int = Query(50, ge=1, le=200)):
+    """列出所有会话，按 updated_at 倒序。"""
+    items = qa_engine.list_sessions(limit=limit)
+    return {"items": items, "total": len(items)}
+
+
+@router.patch("/sessions/{session_id}")
+def rename_session(session_id: str, body: SessionRenameRequest):
+    """重命名会话标题。"""
+    ok = qa_engine.rename_session(session_id, body.title)
+    if not ok:
+        raise HTTPException(404, "会话不存在")
+    return {"session_id": session_id, "title": body.title}
+
+
+@router.delete("/sessions/{session_id}")
+def delete_session(session_id: str):
+    """删除会话及其所有问答记录。"""
+    ok = qa_engine.delete_session(session_id)
+    if not ok:
+        raise HTTPException(404, "会话不存在")
+    return {"deleted": True, "session_id": session_id}
+
+
+# ---------------------------------------------------------------------------
 # 长期记忆管理
 # ---------------------------------------------------------------------------
 class MemoryCreate(BaseModel):
     """新增记忆请求。"""
-    type: str = Field(..., description="preference / fact / correction / term")
+
+    type: str = Field(..., description="preference / fact / correction / term / ocr_correction")
     content: str = Field(..., min_length=1)
     weight: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class MemoryUpdate(BaseModel):
     """更新记忆请求。"""
+
     content: Optional[str] = None
     weight: Optional[float] = Field(None, ge=0.0, le=1.0)
     type: Optional[str] = None
@@ -70,8 +107,8 @@ def list_memories(
 @router.post("/memories")
 def add_memory(body: MemoryCreate):
     """手动添加一条长期记忆。"""
-    if body.type not in ("preference", "fact", "correction", "term"):
-        raise HTTPException(400, "type 必须是 preference/fact/correction/term")
+    if body.type not in ("preference", "fact", "correction", "term", "ocr_correction"):
+        raise HTTPException(400, "type 必须是 preference/fact/correction/term/ocr_correction")
     memory_id = qa_engine.add_manual_memory(body.type, body.content, body.weight)
     return {"memory_id": memory_id, "memory": database.get_memory(memory_id)}
 

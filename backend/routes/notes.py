@@ -139,13 +139,23 @@ def edit_note(note_id: int, body: EditNoteRequest):
         new_ocr = body.ocr_text
         corrections = _extract_ocr_corrections(old_ocr, new_ocr)
         correction_info["extracted"] = len(corrections)
+        # 复用一个 OpenAI client 生成 embedding（避免每条都重新创建）
+        mem_client = ocr_processor._get_client()
         for old_line, new_line in corrections:
             try:
+                embedding = None
+                content = f'"{old_line}" → "{new_line}"'
+                if mem_client is not None:
+                    try:
+                        embedding = ocr_processor._embed_text(mem_client, content)
+                    except Exception:
+                        pass
                 database.insert_memory(
                     type="ocr_correction",
-                    content=f'"{old_line}" → "{new_line}"',
+                    content=content,
                     source="manual_edit",
                     weight=0.7,
+                    embedding=embedding,
                 )
                 correction_info["memories_created"] += 1
             except Exception:

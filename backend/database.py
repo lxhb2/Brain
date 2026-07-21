@@ -178,6 +178,20 @@ def init_db() -> None:
             logger.info("迁移：为 qa_history 表添加 session_id 列")
             c.execute("ALTER TABLE qa_history ADD COLUMN session_id TEXT;")
 
+        # —— qa_sessions 表：会话元信息（id/title/创建时间/更新时间）——
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qa_sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                msg_count INTEGER DEFAULT 0
+            );
+            """
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_qa_sessions_updated ON qa_sessions(updated_at DESC);")
+
 
 # ---------------------------------------------------------------------------
 # 工具函数
@@ -548,27 +562,65 @@ def adjust_link_weight(source_note_id: int, target_note_id: int, delta: float) -
 # ---------------------------------------------------------------------------
 # qa_history CRUD
 # ---------------------------------------------------------------------------
-def insert_qa(*, question: str, answer: str, citations: List[Dict[str, Any]]) -> int:
-    """记录一次问答，返回 qa_history.id。"""
+def insert_qa(*, question: str, answer: str, citations: List[Dict[str, Any]],
+              session_id: Optional[str] = None) -> int:
+    """记录一次问答，返回 qa_history.id。
+
+    若提供 session_id，同步 upsert qa_sessions 表（更新 msg_count/updated_at，
+    若是首条消息则用问题前 20 字符作为默认标题）。
+    """
+    now = _now()
     with _db_lock, get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO qa_history (question, answer, citations, created_at)
-            VALUES (?, ?, ?, ?);
+            INSERT INTO qa_history (question, answer, citations, created_at, session_id)
+            VALUES (?, ?, ?, ?, ?);
             """,
-            (question, answer, json.dumps(citations, ensure_ascii=False), _now()),
+            (question, answer, json.dumps(citations, ensure_ascii=False), now, session_id),
         )
-        return int(cur.lastrowid)
+        qa_id = int(cur.lastrowid)
+
+        # 同步 upsert qa_sessions
+        if session_id:
+            existing = conn.execute(
+                "SELECT session_id, title, msg_count FROM qa_sessions WHERE session_id = ?;",
+                (session_id,),
+            ).fetchone()
+            if existing:
+                # 已存在：更新 updated_at 和 msg_count
+                new_count = int(existing["msg_count"] or 0) + 1
+                cur.execute(
+                    "UPDATE qa_sessions SET updated_at = ?, msg_count = ? WHERE session_id = ?;",
+                    (now, new_count, session_id),
+                )
+            else:
+                # 新会话：用问题前 20 字符作为默认标题
+                default_title = question.strip()[:20] or "(新会话)"
+                cur.execute(
+                    """
+                    INSERT INTO qa_sessions (session_id, title, created_at, updated_at, msg_count)
+                    VALUES (?, ?, ?, ?, 1);
+                    """,
+                    (session_id, default_title, now, now),
+                )
+        return qa_id
 
 
-def get_qa_history(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-    """返回问答历史。"""
+def get_qa_history(limit: int = 50, offset: int = 0,
+                   session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """返回问答历史。可按 session_id 过滤（同 session 的消息按时间正序）。"""
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM qa_history ORDER BY created_at DESC LIMIT ? OFFSET ?;",
-            (int(limit), int(offset)),
-        ).fetchall()
+        if session_id:
+            rows = conn.execute(
+                "SELECT * FROM qa_history WHERE session_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?;",
+                (session_id, int(limit), int(offset)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM qa_history ORDER BY created_at DESC LIMIT ? OFFSET ?;",
+                (int(limit), int(offset)),
+            ).fetchall()
         out: List[Dict[str, Any]] = []
         for r in rows:
             d = dict(r)
@@ -579,6 +631,62 @@ def get_qa_history(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
                     d["citations"] = []
             out.append(d)
         return out
+
+
+# ---------------------------------------------------------------------------
+# qa_sessions CRUD
+# ---------------------------------------------------------------------------
+def list_qa_sessions(limit: int = 50) -> List[Dict[str, Any]]:
+    """列出所有会话，按 updated_at 倒序。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*,
+                   (SELECT question FROM qa_history
+                    WHERE session_id = s.session_id
+                    ORDER BY created_at DESC LIMIT 1) AS last_question,
+                   (SELECT answer FROM qa_history
+                    WHERE session_id = s.session_id
+                    ORDER BY created_at DESC LIMIT 1) AS last_answer
+            FROM qa_sessions s
+            ORDER BY s.updated_at DESC
+            LIMIT ?;
+            """,
+            (int(limit),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_qa_session(session_id: str) -> Optional[Dict[str, Any]]:
+    """获取单个会话元信息。"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM qa_sessions WHERE session_id = ?;",
+            (session_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def rename_qa_session(session_id: str, title: str) -> bool:
+    """重命名会话标题。返回是否成功（会话存在则 True）。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE qa_sessions SET title = ?, updated_at = ? WHERE session_id = ?;",
+            (title.strip()[:60], _now(), session_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_qa_session(session_id: str) -> bool:
+    """删除会话及其所有问答记录。返回是否成功。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        # 先删 qa_history 里该 session 的所有记录
+        cur.execute("DELETE FROM qa_history WHERE session_id = ?;", (session_id,))
+        # 再删 session 元信息
+        cur.execute("DELETE FROM qa_sessions WHERE session_id = ?;", (session_id,))
+        return cur.rowcount > 0
 
 
 def get_qa(qa_id: int) -> Optional[Dict[str, Any]]:
