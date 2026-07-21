@@ -232,6 +232,15 @@ def recognize_file(
         raise RuntimeError("百度 OCR 未配置 API_KEY / SECRET_KEY")
 
     ext = file_path.lower().rsplit(".", 1)[-1] if "." in file_path else ""
+    # 读文件头几个字节，用于诊断真实格式（防止扩展名造假）
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(16)
+        logger.info("百度 OCR 路由: ext=%s head_hex=%s", ext, head.hex())
+    except Exception as e:
+        logger.warning("读取文件头失败: %s", e)
+        head = b""
+
     if ext == "pdf":
         with open(file_path, "rb") as f:
             pdf_bytes = f.read()
@@ -239,6 +248,20 @@ def recognize_file(
     elif ext in ("jpg", "jpeg", "png", "bmp"):
         with open(file_path, "rb") as f:
             img_bytes = f.read()
+        # HEIC/HEIF 实际是 iPhone 拍照格式，百度 OCR 不支持，需提前转 PNG
+        if head[:8] == b"\x00\x00\x00\x18\x66\x74\x79\x70" or head[:4] == b"\x00\x00\x00":
+            logger.warning("检测到可能是 HEIC/HEIF 格式（iPhone 拍照），尝试转 PNG")
+            try:
+                from PIL import Image
+                import io
+                img = Image.open(io.BytesIO(img_bytes))
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                img_bytes = buf.getvalue()
+                logger.info("HEIC -> PNG 转换成功，新大小 %d bytes", len(img_bytes))
+            except Exception as e:
+                logger.error("HEIC 转 PNG 失败（可能需要 pillow-heif）: %s", e)
+                raise RuntimeError(f"不支持的图片格式（疑似 HEIC），转换失败: {e}")
         return recognize_image(img_bytes, api_key=api_key, secret_key=secret_key)
     else:
         raise RuntimeError(f"百度 OCR 不支持的文件类型: .{ext}")

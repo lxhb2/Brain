@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 import settings_store
 import watcher
+from config import get_config
 
 router = APIRouter(prefix="/api", tags=["settings"])
 

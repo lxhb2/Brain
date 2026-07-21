@@ -426,7 +426,11 @@ def _try_baidu_ocr(file_path: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
     try:
         import baidu_ocr
-        logger.info("尝试 OCR 模型: 百度手写 OCR (handwriting)")
+        # 打印文件诊断信息（便于排查 image format error）
+        file_size = os.path.getsize(file_path) if os.path.exists(file_path) else -1
+        file_ext = os.path.splitext(file_path)[1].lower()
+        logger.info("尝试 OCR 模型: 百度手写 OCR (handwriting) | file=%s ext=%s size=%d bytes",
+                    os.path.basename(file_path), file_ext, file_size)
         text = baidu_ocr.recognize_file(
             file_path,
             api_key=cfg.BAIDU_OCR_API_KEY,
