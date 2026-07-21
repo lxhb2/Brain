@@ -17,7 +17,6 @@ from __future__ import annotations
 import base64
 import logging
 import time
-import urllib.parse
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -78,13 +77,16 @@ def _get_access_token(api_key: str, secret_key: str) -> str:
 
 
 def _encode_image(image_bytes: bytes) -> str:
-    """base64 + urlencode 编码图片字节。"""
-    b64 = base64.b64encode(image_bytes).decode("ascii")
-    return urllib.parse.quote(b64, safe="")
+    """base64 编码图片字节（不 urlencode，requests 会自动处理）。"""
+    return base64.b64encode(image_bytes).decode("ascii")
 
 
 def _call_handwriting(image_bytes: bytes, token: str) -> str:
-    """调用手写文字识别接口，返回识别文本（多行用 \\n 连接）。"""
+    """调用手写文字识别接口，返回识别文本（多行用 \\n 连接）。
+
+    注意：image 字段传 base64 字符串即可，requests 库会自动 urlencode，
+    不要手动 urlencode 否则会双重编码导致 216201 image format error。
+    """
     encoded = _encode_image(image_bytes)
     try:
         resp = requests.post(
@@ -106,7 +108,7 @@ def _call_handwriting(image_bytes: bytes, token: str) -> str:
     if "error_code" in data:
         err_code = data.get("error_code")
         err_msg = data.get("error_msg", "")
-        # 常见错误：111 token 过期、17 配额超限、216201 缺参数
+        # 常见错误：111 token 过期、17 配额超限、216201 image format error
         logger.error("百度 OCR 错误: code=%s msg=%s", err_code, err_msg)
         raise RuntimeError(f"百度 OCR 错误 [{err_code}]: {err_msg}")
 
