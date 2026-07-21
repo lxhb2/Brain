@@ -417,7 +417,6 @@ export const api = {
     }>
   },
 
-  // —— OCR 模型列表 ——
-  listOcrModels: () => getJSON<{ models: OcrModel[] }>('/api/ocr-models'),
+  // —— OCR 模型重置 ——
   resetOcrModels: () => postJSON<{ models: OcrModel[] }>('/api/ocr-models/reset', {}),
 }
