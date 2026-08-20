@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     EMBEDDING_DIM: int = 1024  # bge-m3 默认维度
 
+    # —— OCR 并发配置 ——
+    # 后台 worker 并发数（多张笔记可并行 OCR，受 LLM API 速率限制约束）
+    OCR_WORKERS: int = 3
+    # 多页 PDF 并发调用的最大页数并发（避免单次请求打爆 LLM API）
+    OCR_PAGE_PARALLELISM: int = 4
+    # PDF 渲染缩放系数（1.5≈108DPI 对 OCR 足够，2.0=144DPI 体积翻倍）
+    PDF_RENDER_ZOOM: float = 1.5
+
     # —— 链接权重计算参数 ——
     LINK_ALPHA: float = 0.6   # 语义相似度权重
     LINK_BETA: float = 0.3    # 关键词 Jaccard 权重

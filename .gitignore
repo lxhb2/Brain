@@ -25,3 +25,10 @@ frontend/.vite/
 .vscode/
 .idea/
 .DS_Store
+
+# Trae IDE 临时产物（.trae/documents 下的 PRD/架构文档保留，属有价值交接材料）
+.trae-html-share-packages/
+
+# 打包产物
+*.tar.gz
+*.zip

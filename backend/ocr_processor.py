@@ -24,6 +24,8 @@ import json
 import logging
 import os
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 import database
@@ -36,6 +38,24 @@ logger = logging.getLogger("brain.ocr")
 SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx")
 # 文本型扩展名（不经过 OCR vision，直接抽文本 → LLM 结构化）
 TEXT_EXTS = (".txt", ".md", ".markdown", ".docx")
+
+# 链接重算专用线程池：把 O(N) 的图谱重算从 OCR worker 挪到独立线程，
+# 避免阻塞 worker 处理下一条笔记。database._db_lock 保证写链接表的线程安全。
+_link_recompute_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="link-recompute")
+
+
+def _submit_link_recompute(note_id: int) -> None:
+    """把链接重算任务提交到后台线程池，不阻塞当前 worker。
+
+    graph_api.recompute_links_for_note 是 O(N) 操作（N=全库 done 笔记数），
+    同步执行会拖慢 OCR worker 处理下一条笔记的速度。
+    """
+    def _do_recompute():
+        try:
+            graph_api.recompute_links_for_note(note_id)
+        except Exception as ge:
+            logger.warning("链接重算失败 note %s: %s", note_id, ge)
+    _link_recompute_pool.submit(_do_recompute)
 
 
 # ---------------------------------------------------------------------------
@@ -70,10 +90,10 @@ def file_to_images(path: str) -> List[str]:
         try:
             # 控制总页数，避免超大 PDF 把 token 打爆
             max_pages = min(doc.page_count, 10)
+            # 从 config 读取 DPI 缩放系数（默认 1.5≈108DPI，体积比 2.0 小一半）
+            zoom = get_config().PDF_RENDER_ZOOM
             for i in range(max_pages):
                 page = doc.load_page(i)
-                # 150 DPI 左右，对 OCR 足够
-                zoom = 2.0
                 pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
                 png_bytes = pix.tobytes("png")
                 images.append(base64.b64encode(png_bytes).decode("ascii"))
@@ -206,8 +226,13 @@ def generate_thumbnail(path: str, out_path: str, width: int = 200, quality: int 
 # ---------------------------------------------------------------------------
 # OpenAI 客户端
 # ---------------------------------------------------------------------------
+@lru_cache(maxsize=1)
 def _get_client():
-    """惰性构造 OpenAI 客户端。未配置 key 时返回 None（进入 demo 模式）。"""
+    """构造并缓存 OpenAI 客户端。未配置 key 时返回 None（进入 demo 模式）。
+
+    使用 lru_cache 复用同一个客户端实例，避免每次调用都重新创建
+    （OpenAI SDK 内部维护 HTTP 连接池，复用客户端可大幅减少连接建立开销）。
+    """
     cfg = get_config()
     if not cfg.OPENAI_API_KEY:
         return None
@@ -313,22 +338,34 @@ def _call_vision_model(client, model_id: str, images: List[str]) -> Dict[str, An
     if len(images) <= 1:
         return _call_vision_single(client, model_id, images)
 
-    # 多页：分页 OCR，最后合并
-    logger.info("多页文档（%d 页），分页 OCR 后合并", len(images))
-    page_results: List[Dict[str, Any]] = []
-    for idx, img in enumerate(images):
+    # 多页：并发分页 OCR，最后合并
+    # 用 ThreadPoolExecutor 并发调用 vision 模型，大幅减少多页 PDF 的总耗时
+    # （例如 10 页 PDF 串行需 10×30s=300s，4 并发仅需 ~3 轮≈90s）
+    max_workers = min(len(images), get_config().OCR_PAGE_PARALLELISM)
+    logger.info("多页文档（%d 页），并发 OCR（%d 并发）后合并", len(images), max_workers)
+    page_results: List[Optional[Dict[str, Any]]] = [None] * len(images)
+
+    def _ocr_page(idx: int, img: str) -> tuple[int, Optional[Dict[str, Any]]]:
         try:
             r = _call_vision_single(client, model_id, [img], page_idx=idx + 1, total_pages=len(images))
-            if r:
-                page_results.append(r)
-            else:
-                logger.warning("第 %d/%d 页 OCR 返回空，跳过", idx + 1, len(images))
+            return idx, r if r else None
         except Exception as e:
             logger.warning("第 %d/%d 页 OCR 失败: %s", idx + 1, len(images), e)
-            continue
+            return idx, None
 
-    if not page_results:
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ocr-page") as pool:
+        futures = {pool.submit(_ocr_page, i, img): i for i, img in enumerate(images)}
+        for fut in as_completed(futures):
+            idx, result = fut.result()
+            page_results[idx] = result
+            if not result:
+                logger.warning("第 %d/%d 页 OCR 返回空，跳过", idx + 1, len(images))
+
+    # 过滤掉空结果，但保留顺序
+    valid_results = [(i, r) for i, r in enumerate(page_results) if r]
+    if not valid_results:
         return {}
+    page_results = [r for _, r in valid_results]
 
     # 合并
     merged_ocr_parts: List[str] = []
@@ -851,11 +888,8 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                 )
                 embedding = _embed_text(client, embed_input)
                 database.update_note_fields(note_id, embedding=embedding)
-            # 重算链接
-            try:
-                graph_api.recompute_links_for_note(note_id)
-            except Exception as ge:
-                logger.warning("链接重算失败 note %s: %s", note_id, ge)
+            # 重算链接（异步，不阻塞 worker）
+            _submit_link_recompute(note_id)
             database.update_note_status(note_id, "done")
             logger.info("笔记 %s 人工编辑版本已重算 embedding (model=manual)", note_id)
             return True
@@ -941,11 +975,8 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
             ocr_model=used_model_id,
         )
 
-        # 重算候选链接
-        try:
-            graph_api.recompute_links_for_note(note_id)
-        except Exception as ge:
-            logger.warning("链接重算失败 note %s: %s", note_id, ge)
+        # 重算候选链接（异步，不阻塞 worker 处理下一条笔记）
+        _submit_link_recompute(note_id)
 
         logger.info("笔记 %s 处理完成 (demo=%s, model=%s)", note_id, is_demo, used_model_id)
         return True

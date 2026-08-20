@@ -32,9 +32,12 @@ SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", "
 
 # 全局处理队列与状态
 _processing_queue: "queue.Queue[int]" = queue.Queue()
-_worker_thread: Optional[threading.Thread] = None
+_worker_threads: List[threading.Thread] = []
 _worker_stop = threading.Event()
 _scheduler: Optional[object] = None  # 防止类型依赖，运行时为 BackgroundScheduler
+# 正在处理中的 note_id 集合，防止多 worker 重复拾取同一条
+_processing_ids: set = set()
+_processing_ids_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -50,14 +53,24 @@ def queue_size() -> int:
     return _processing_queue.qsize()
 
 
-def _worker_loop() -> None:
-    """后台 worker 主循环：拉取 note_id 并处理。"""
-    logger.info("OCR worker 已启动")
+def _worker_loop(worker_idx: int) -> None:
+    """后台 worker 主循环：拉取 note_id 并处理。
+
+    多 worker 并发运行，通过 _processing_ids 集合去重，避免同一 note_id
+    被多个 worker 同时拾取（enqueue 可能被调用多次）。
+    """
+    logger.info("OCR worker #%d 已启动", worker_idx)
     while not _worker_stop.is_set():
         try:
             note_id = _processing_queue.get(timeout=1.0)
         except queue.Empty:
             continue
+        # 去重：正在处理中的跳过
+        with _processing_ids_lock:
+            if note_id in _processing_ids:
+                _processing_queue.task_done()
+                continue
+            _processing_ids.add(note_id)
         try:
             note = database.get_note(note_id)
             # 跳过已 done 的，避免重复处理
@@ -67,7 +80,7 @@ def _worker_loop() -> None:
             ocr_processor.process_note(note_id)
         except Exception as e:
             err_msg = str(e)
-            logger.exception("worker 处理笔记 %s 失败: %s", note_id, e)
+            logger.exception("worker #%d 处理笔记 %s 失败: %s", worker_idx, note_id, e)
             try:
                 # 记录重试次数和错误信息，便于自动重试和前端展示
                 database.increment_retry_count(note_id, err_msg)
@@ -75,22 +88,37 @@ def _worker_loop() -> None:
             except Exception:
                 pass
         finally:
+            with _processing_ids_lock:
+                _processing_ids.discard(note_id)
             _processing_queue.task_done()
-    logger.info("OCR worker 已停止")
+    logger.info("OCR worker #%d 已停止", worker_idx)
 
 
 def start_worker() -> None:
-    """启动后台 worker 线程（幂等）。"""
-    global _worker_thread
-    if _worker_thread and _worker_thread.is_alive():
+    """启动后台 worker 线程池（幂等）。
+
+    worker 数量由 config.OCR_WORKERS 控制，默认 3。
+    多个 worker 并行消费队列，一次可同时 OCR 多张笔记。
+    """
+    global _worker_threads
+    if _worker_threads and any(t.is_alive() for t in _worker_threads):
         return
     _worker_stop.clear()
-    _worker_thread = threading.Thread(target=_worker_loop, name="brain-ocr-worker", daemon=True)
-    _worker_thread.start()
+    _worker_threads = []
+    try:
+        from config import get_config
+        n_workers = max(1, get_config().OCR_WORKERS)
+    except Exception:
+        n_workers = 3
+    for i in range(n_workers):
+        t = threading.Thread(target=_worker_loop, args=(i,), name=f"brain-ocr-worker-{i}", daemon=True)
+        t.start()
+        _worker_threads.append(t)
+    logger.info("已启动 %d 个 OCR worker", n_workers)
 
 
 def stop_worker() -> None:
-    """通知 worker 停止（用于优雅关闭）。"""
+    """通知所有 worker 停止（用于优雅关闭）。"""
     _worker_stop.set()
 
 

@@ -53,7 +53,8 @@ def health() -> Dict[str, Any]:
     # worker
     try:
         import scheduler
-        components["worker"] = "ok" if (scheduler._worker_thread and scheduler._worker_thread.is_alive()) else "stopped"
+        alive = any(t.is_alive() for t in scheduler._worker_threads) if scheduler._worker_threads else False
+        components["worker"] = "ok" if alive else "stopped"
     except Exception:
         components["worker"] = "unknown"
 
