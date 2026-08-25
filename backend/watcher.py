@@ -97,6 +97,14 @@ class NoteWatcher(FileSystemEventHandler):
         if note and note.get("status") == "done":
             return
         logger.info("watcher 发现新文件: %s (note_id=%s)", src_path, note_id)
+        database.insert_activity(
+            event_type="upload",
+            message=f"设备 {self.device or 'unknown'}-{self.app or 'unknown'} 同步 {fname}",
+            device=self.device,
+            app=self.app,
+            note_id=note_id,
+            file_name=fname,
+        )
         scheduler.enqueue_note(note_id)
 
     # ---- watchdog 回调 ----

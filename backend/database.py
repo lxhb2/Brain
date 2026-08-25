@@ -15,6 +15,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from config import get_config
@@ -130,6 +131,25 @@ def init_db() -> None:
             );
             """
         )
+
+        # —— 轻量活动日志：模型任务 / 上传 / 备份 / 错误 ——
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                model TEXT,
+                device TEXT,
+                app TEXT,
+                note_id INTEGER,
+                file_name TEXT,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_logs(created_at DESC);")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_activity_event ON activity_logs(event_type, created_at DESC);")
 
         # —— 兼容性迁移：给 notes 表添加 ocr_model 字段（记录用了哪个模型 OCR）——
         # 旧库不存在该列时通过 ALTER TABLE 添加；新库在 CREATE TABLE 已包含则跳过
@@ -288,6 +308,123 @@ def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, TypeError):
             d["embedding"] = None
     return d
+
+
+def insert_activity(
+    *,
+    event_type: str,
+    message: str,
+    model: Optional[str] = None,
+    device: Optional[str] = None,
+    app: Optional[str] = None,
+    note_id: Optional[int] = None,
+    file_name: Optional[str] = None,
+) -> int:
+    """写入一条简短活动日志。日志失败不能影响主业务。"""
+    try:
+        with _db_lock, get_conn() as conn:
+            cur = conn.cursor()
+            # 上传接口和文件监听可能同时发现同一文件；保留首条来源即可。
+            if event_type == "upload" and note_id:
+                cur.execute(
+                    """
+                    SELECT id FROM activity_logs
+                    WHERE event_type = 'upload' AND note_id = ? AND file_name = ?
+                    ORDER BY id DESC LIMIT 1;
+                    """,
+                    (note_id, file_name[:255] if file_name else None),
+                )
+                row = cur.fetchone()
+                if row:
+                    return int(row["id"])
+            cur.execute(
+                """
+                INSERT INTO activity_logs
+                    (event_type, message, model, device, app, note_id, file_name, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    event_type,
+                    message[:1000],
+                    model[:200] if model else None,
+                    device[:100] if device else None,
+                    app[:100] if app else None,
+                    note_id,
+                    file_name[:255] if file_name else None,
+                    _now(),
+                ),
+            )
+            conn.execute("DELETE FROM activity_logs WHERE id <= (SELECT MAX(id) FROM activity_logs) - 5000;")
+            return int(cur.lastrowid)
+    except Exception as e:
+        logger.warning("写入活动日志失败: %s", e)
+        return 0
+
+
+def list_activity_logs(
+    *,
+    event_type: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    """按时间倒序列出活动日志。"""
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+    where = " WHERE event_type = ?" if event_type else ""
+    params: List[Any] = [event_type] if event_type else []
+
+    with get_conn() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) AS n FROM activity_logs{where};",
+            params,
+        ).fetchone()["n"]
+        rows = conn.execute(
+            f"""
+            SELECT * FROM activity_logs{where}
+            ORDER BY id DESC LIMIT ? OFFSET ?;
+            """,
+            [*params, limit, offset],
+        ).fetchall()
+        return {
+            "items": [dict(r) for r in rows],
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+        }
+
+
+def create_database_backup(*, keep: int = 14) -> Dict[str, Any]:
+    """在线创建 SQLite 备份，并记录备份时间与文件名。"""
+    cfg = get_config()
+    db_path = Path(cfg.DB_PATH)
+    backup_dir = db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    file_name = f"brain_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    backup_path = backup_dir / file_name
+
+    with _db_lock, get_conn() as src:
+        dst = sqlite3.connect(backup_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+
+    backups = sorted(backup_dir.glob("brain_*.db"), key=lambda p: p.name, reverse=True)
+    for old_path in backups[max(1, int(keep)):]:
+        old_path.unlink(missing_ok=True)
+
+    size = backup_path.stat().st_size
+    log_id = insert_activity(
+        event_type="backup",
+        message=f"数据库备份完成：{file_name}",
+        file_name=file_name,
+    )
+    return {
+        "backup_id": log_id,
+        "file_name": file_name,
+        "path": str(backup_path),
+        "size_bytes": size,
+    }
 
 
 # ---------------------------------------------------------------------------

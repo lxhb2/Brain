@@ -32,6 +32,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 
+# Compose 和脚本都从项目 .env 解析数据目录，避免 cron/非交互执行时回退到 ./data
+if [[ -f .env ]]; then
+    env_data_dir="$(sed -n 's/^[[:space:]]*BRAIN_DATA_DIR=[[:space:]]*//p' .env | tail -n 1 | tr -d '\"' | tr -d "'")"
+    if [[ -n "$env_data_dir" ]]; then
+        export BRAIN_DATA_DIR="$env_data_dir"
+    fi
+fi
+
 # ---- 参数解析 ----
 MODE="dev"
 ACTION="up"
@@ -94,11 +102,14 @@ init_env() {
 
 # ---- 初始化目录 ----
 init_dirs() {
+    local data_dir="${BRAIN_DATA_DIR:-${PROJECT_DIR}/data}"
     step "创建数据目录"
-    mkdir -p data/synced_notes/{ipad-goodnotes,android-notes,pc-onenote,camera-shots}
-    mkdir -p data/thumbnails
-    mkdir -p data/backups
-    info "数据目录就绪: $(pwd)/data/"
+    mkdir -p "${data_dir}/synced_notes"/{ipad-goodnotes,android-notes,pc-onenote,camera-shots}
+    mkdir -p "${data_dir}"/{thumbnails,backups,secrets,cloud,sftpgo/{config,data}}
+    if [[ "$(id -u)" -eq 0 ]]; then
+        chown -R 1000:1000 "$data_dir"
+    fi
+    info "数据目录就绪: $data_dir/"
 }
 
 # ---- 启动服务 ----
@@ -140,11 +151,12 @@ start_services() {
     else
         echo "    访问: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost):8080"
         echo "    后端: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost):8000"
+        echo "    云盘: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost):8090"
     fi
     echo ""
     echo "    查看日志:   ./scripts/deploy.sh --logs"
     echo "    停止服务:   ./scripts/deploy.sh --stop"
-    echo "    备份数据库: ./scripts/deploy.sh --backup"
+        echo "    备份数据库: ./scripts/deploy.sh --backup"
 }
 
 # ---- 更新 ----
@@ -174,17 +186,18 @@ do_stop() {
 # ---- 备份 ----
 do_backup() {
     step "备份 SQLite 数据库"
-    local ts backup_file
+    local ts backup_file data_dir
     ts=$(date +%Y%m%d_%H%M%S)
-    backup_file="data/backups/brain_${ts}.db"
-    if [[ -f data/brain.db ]]; then
+    data_dir="${BRAIN_DATA_DIR:-${PROJECT_DIR}/data}"
+    backup_file="${data_dir}/backups/brain_${ts}.db"
+    if [[ -f "${data_dir}/brain.db" ]]; then
         # 用 sqlite3 的 backup API 保证一致性（无需停服）
         docker compose exec -T backend python -c \
             "import sqlite3; src=sqlite3.connect('/app/data/brain.db'); dst=sqlite3.connect('/app/data/backups/brain_${ts}.db'); src.backup(dst); dst.close(); src.close()" \
-            2>/dev/null || cp data/brain.db "$backup_file"
+            2>/dev/null || cp "${data_dir}/brain.db" "$backup_file"
         info "已备份: $backup_file"
         # 仅保留最近 14 份
-        ls -t data/backups/brain_*.db 2>/dev/null | tail -n +15 | xargs -r rm
+        ls -t "${data_dir}"/backups/brain_*.db 2>/dev/null | tail -n +15 | xargs -r rm
         info "已清理旧备份（保留最近 14 份）"
     else
         warn "未找到 data/brain.db，跳过备份"

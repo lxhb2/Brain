@@ -1,6 +1,15 @@
 import { useEffect } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
-import { Network, MessagesSquare, NotebookPen, Sparkles, Settings as SettingsIcon, Layers } from 'lucide-react'
+import {
+  Network,
+  MessagesSquare,
+  NotebookPen,
+  Sparkles,
+  Settings as SettingsIcon,
+  Layers,
+  Smartphone,
+  ScrollText,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
 
@@ -82,6 +91,13 @@ function MobileStatBar() {
         >
           <SettingsIcon className="h-4 w-4" strokeWidth={1.5} />
         </button>
+        <button
+          onClick={() => navigate('/logs')}
+          className="flex h-6 w-6 items-center justify-center rounded-md text-dust transition-colors hover:text-flux"
+          aria-label="活动日志"
+        >
+          <ScrollText className="h-4 w-4" strokeWidth={1.5} />
+        </button>
       </span>
     </div>
   )
@@ -114,6 +130,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <NavItem to="/qa" label="问答" icon={<MessagesSquare className="h-5 w-5" strokeWidth={1.5} />} mobile />
         <NavItem to="/cards" label="卡片" icon={<Layers className="h-5 w-5" strokeWidth={1.5} />} mobile />
         <NavItem to="/notes" label="笔记" icon={<NotebookPen className="h-5 w-5" strokeWidth={1.5} />} mobile />
+        <NavItem to="/connect" label="连接" icon={<Smartphone className="h-5 w-5" strokeWidth={1.5} />} mobile />
       </nav>
     </div>
   )
@@ -141,6 +158,8 @@ function DesktopSidebar() {
         <NavItem to="/qa" label="智能问答" icon={<MessagesSquare className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/cards" label="知识卡片" icon={<Layers className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/notes" label="笔记浏览" icon={<NotebookPen className="h-4 w-4" strokeWidth={1.5} />} />
+        <NavItem to="/connect" label="手机连接" icon={<Smartphone className="h-4 w-4" strokeWidth={1.5} />} />
+        <NavItem to="/logs" label="日志" icon={<ScrollText className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/settings" label="设置" icon={<SettingsIcon className="h-4 w-4" strokeWidth={1.5} />} />
       </nav>
 

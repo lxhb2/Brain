@@ -19,9 +19,12 @@ services:
       - "8000:8000"
     volumes:
       # 笔记同步目录（Syncthing 也指向这里）
-      - ./data/synced_notes:/app/data/synced_notes
+      - ${BRAIN_DATA_DIR:-./data}/synced_notes:/app/data/synced_notes
       # 数据库 + 缩略图持久化（整体 data 目录）
-      - ./data:/app/data
+      - ${BRAIN_DATA_DIR:-./data}:/app/data
+    extra_hosts:
+      # 本机推理服务（如 LM Studio）从容器内固定可达
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
@@ -29,8 +32,11 @@ services:
       - SYNCED_NOTES_ROOT=/app/data/synced_notes
       - THUMBNAIL_DIR=/app/data/thumbnails
       - DB_PATH=/app/data/brain.db
-      # 生产环境 worker 数（OCR 是 IO 密集，1 个够用；调高会多占内存）
+      # 轻量化运行参数：单进程、限制并发和渲染倍率，避免 OCR/PDF 峰值放大内存
       - UVICORN_WORKERS=1
+      - OCR_WORKERS=1
+      - OCR_PAGE_PARALLELISM=2
+      - PDF_RENDER_ZOOM=1.25
       - TZ=Asia/Shanghai
     # 资源约束：OCR 调外部 API 不耗本地算力，256MB 足够
     deploy:
@@ -67,6 +73,13 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.5"
+        reservations:
+          memory: 32M
     logging:
       driver: json-file
       options:
@@ -94,8 +107,8 @@ services:
       - PGID=1000
       - TZ=Asia/Shanghai
     volumes:
-      - ./data/syncthing-config:/var/syncthing/config
-      - ./data/synced_notes:/var/syncthing/data/synced_notes
+      - ${BRAIN_DATA_DIR:-./data}/syncthing-config:/var/syncthing/config
+      - ${BRAIN_DATA_DIR:-./data}/synced_notes:/var/syncthing/data/synced_notes
     ports:
       - "8384:8384"   # Web UI
       - "22000:22000/tcp"
@@ -106,6 +119,59 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+        reservations:
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8384/rest/noauth/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - brain-net
+
+  # 自托管免费云盘。SFTPGo 是活跃维护项目；这里只开放 Web 文件管理，
+  # 不直接暴露数据库、备份目录或宿主机路径。
+  cloud:
+    image: drakkan/sftpgo:v2.7.5
+    container_name: brain-cloud
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "8090:8080"
+    volumes:
+      - ${BRAIN_DATA_DIR:-./data}/cloud:/srv/sftpgo/data
+      - ${BRAIN_DATA_DIR:-./data}/sftpgo/config:/var/lib/sftpgo
+    environment:
+      - TZ=Asia/Shanghai
+      - SFTPGO_CONFIG_DIR=/var/lib/sftpgo
+      - SFTPGO_DATA_PROVIDER__NAME=/var/lib/sftpgo/sftpgo.db
+      - SFTPGO_DATA_PROVIDER__USERS_BASE_DIR=/srv/sftpgo/data
+      # 只使用 Web 客户端/管理端；不开 SFTP 端口可降低暴露面
+      - SFTPGO_SFTPD__BINDINGS__0__PORT=0
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: "0.25"
+        reservations:
+          memory: 32M
+    healthcheck:
+      test: ["CMD", "sftpgo", "ping", "--config-dir", "/var/lib/sftpgo"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     networks:
       - brain-net
 

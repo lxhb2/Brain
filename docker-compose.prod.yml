@@ -28,8 +28,8 @@ services:
       - "443:443/udp"  # HTTP/3
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./data/caddy-data:/data         # 证书与状态持久化
-      - ./data/caddy-config:/config
+      - ${BRAIN_DATA_DIR:-./data}/caddy-data:/data
+      - ${BRAIN_DATA_DIR:-./data}/caddy-config:/config
     depends_on:
       - frontend
     logging:

@@ -200,7 +200,7 @@ function GraphCanvas() {
             <Network className="h-10 w-10 opacity-40" strokeWidth={1} />
             <div className="font-display text-lg text-starlight/70">星空尚空</div>
             <p className="max-w-xs text-sm">
-              将手写笔记（PDF / PNG / JPG）放入中转机的 <code className="rounded bg-white/5 px-1 font-mono text-xs">synced_notes/</code> 目录，系统会自动监听并入库。
+              点击右上角“上传”，或从私有云盘上传 PDF / PNG / JPG / TXT / MD / DOCX，系统会自动监听并入库。
             </p>
           </div>
         )}

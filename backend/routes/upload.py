@@ -1,9 +1,9 @@
 """笔记上传接口。
 
 允许手机/平板通过 HTTP 直接上传手写笔记图片（拍照或选文件），
-无需 Syncthing。上传后主动入库并入队 OCR 处理（不依赖 watcher，
-因为上传目录是动态生成的 <device>-<app>/<yyyymmdd>/，可能不在
-watcher 监听列表里）。
+无需 Syncthing。文件会保存到私有云盘目录
+cloud/from-brain/<device>-<app>/<yyyymmdd>/，既释放本地同步目录空间，
+也会被 watcher 自动入库并排队 OCR 处理。
 """
 from __future__ import annotations
 
@@ -29,19 +29,25 @@ router = APIRouter(prefix="/api", tags=["upload"])
 ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx"}
 # 单文件大小上限：50MB（手写笔记图片足够）
 MAX_FILE_SIZE = 50 * 1024 * 1024
-# 默认上传目录（相对 SYNCED_NOTES_ROOT）
-DEFAULT_SUBDIR = "uploads"
+# 私有云盘内的上传根目录
+DEFAULT_SUBDIR = "from-brain"
+
+
+def _cloud_root() -> str:
+    """返回私有云盘根目录（与 SFTPGo 挂载目录一致）。"""
+    cfg = get_config()
+    data_root = os.path.dirname(os.path.abspath(cfg.SYNCED_NOTES_ROOT))
+    return os.path.abspath(os.path.join(data_root, "cloud"))
 
 
 def _ensure_upload_dir(device: str = "", app: str = "") -> str:
     """确保上传目录存在，返回绝对路径。
 
-    目录结构：SYNCED_NOTES_ROOT/<device>-<app or uploads>/<yyyymmdd>/
+    目录结构：cloud/from-brain/<device>-<app>/<yyyymmdd>/
     """
-    cfg = get_config()
     subdir = f"{device}-{app}" if device and app else DEFAULT_SUBDIR
     today = datetime.now().strftime("%Y%m%d")
-    upload_dir = os.path.abspath(os.path.join(cfg.SYNCED_NOTES_ROOT, subdir, today))
+    upload_dir = os.path.abspath(os.path.join(_cloud_root(), DEFAULT_SUBDIR, subdir, today))
     os.makedirs(upload_dir, exist_ok=True)
     return upload_dir
 
@@ -65,7 +71,7 @@ async def upload_note(
     device: Optional[str] = Form(None),
     app: Optional[str] = Form(None),
 ):
-    """上传一个或多个手写笔记图片。
+    """上传一个或多个手写笔记图片到私有云盘。
 
     - files: 文件列表（multipart/form-data）
     - device: 设备名（可选，如 'android'、'iphone'）
@@ -150,7 +156,16 @@ async def upload_note(
                 "note_id": note_id,
                 "enqueue": enqueue_status,
                 "enqueue_error": enqueue_err or None,
+                "storage": "cloud",
             })
+            database.insert_activity(
+                event_type="upload",
+                message=f"设备 {device}-{app} 上传 {original_name}",
+                device=device,
+                app=app,
+                note_id=note_id,
+                file_name=original_name,
+            )
             logger.info("上传成功: %s -> %s (%.1fKB, note_id=%s, %s)",
                         original_name, save_path, len(content) / 1024,
                         note_id, enqueue_status)
@@ -171,5 +186,6 @@ async def upload_note(
         "success": success_count,
         "failed": len(files) - success_count,
         "files": saved_files,
-        "message": f"上传完成：{success_count}/{len(files)} 个文件成功，已入队 OCR 处理",
+        "storage": "cloud",
+        "message": f"上传完成：{success_count}/{len(files)} 个文件成功，已保存到私有云盘并进入 OCR 队列",
     }

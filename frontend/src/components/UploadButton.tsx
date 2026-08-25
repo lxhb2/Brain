@@ -147,7 +147,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
                   </div>
                 ))}
                 <div className="rounded-lg bg-white/5 px-3 py-2 text-center text-[11px] text-dust">
-                  文件已上传，正在自动处理（图片走 OCR，文档走文本抽取），约 10-30 秒后刷新可见
+                  文件已保存到私有云盘，正在自动处理（图片走 OCR，文档走文本抽取），约 10-30 秒后刷新可见
                 </div>
                 <button
                   onClick={() => {

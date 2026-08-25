@@ -121,6 +121,36 @@ def _seed_watch_folders() -> List[Dict[str, Any]]:
     return folders
 
 
+def _ensure_cloud_watch_folder(folders: List[Dict[str, Any]]) -> bool:
+    """Keep the private cloud drive connected to the note watcher.
+
+    SFTPGo writes uploads into <data root>/cloud. Existing installations may
+    have settings created before that folder existed, so add it once here.
+    Users can disable it in Settings; a disabled record will not be re-added.
+    """
+    cfg = get_config()
+    data_root = os.path.dirname(os.path.abspath(cfg.SYNCED_NOTES_ROOT))
+    cloud_path = os.path.abspath(os.path.join(data_root, "cloud"))
+    if any(
+        os.path.abspath(str(item.get("path", ""))) == cloud_path
+        for item in folders
+    ):
+        return False
+
+    folders.append(
+        {
+            "id": uuid.uuid4().hex[:12],
+            "path": cloud_path,
+            "device": "cloud",
+            "app": "sftpgo",
+            "enabled": True,
+            "recursive": True,
+            "auto": False,
+        }
+    )
+    return True
+
+
 def _seed_model() -> Dict[str, Any]:
     cfg = get_config()
     return {
@@ -194,6 +224,8 @@ def get_watch_folders() -> List[Dict[str, Any]]:
     val = _get_raw("watch_folders")
     if val is None:
         val = _seed_watch_folders()
+    changed = _ensure_cloud_watch_folder(val)
+    if changed or _get_raw("watch_folders") is None:
         _set_raw("watch_folders", val)
     return val  # type: ignore[return-value]
 

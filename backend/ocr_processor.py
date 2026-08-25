@@ -241,10 +241,31 @@ def _get_client():
     except ImportError as e:  # pragma: no cover
         logger.error("openai SDK 未安装: %s", e)
         return None
-    kwargs: Dict[str, Any] = {"api_key": cfg.OPENAI_API_KEY}
+    kwargs: Dict[str, Any] = {"api_key": cfg.OPENAI_API_KEY, "max_retries": 0}
     if cfg.OPENAI_BASE_URL:
         kwargs["base_url"] = cfg.OPENAI_BASE_URL
     return OpenAI(**kwargs)
+
+
+_STRUCTURED_JSON_SCHEMA = {
+    "name": "brain_note_structured",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "ocr_text": {"type": "string"},
+            "summary": {"type": "string"},
+            "keywords": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["title", "ocr_text", "summary", "keywords"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _completion_text(message: Any) -> str:
+    """兼容普通输出与 LM Studio/Qwen 推理模型的分离 reasoning 输出。"""
+    return getattr(message, "content", None) or getattr(message, "reasoning_content", None) or ""
 
 
 def _strip_fences(text: str) -> str:
@@ -454,10 +475,11 @@ def _call_vision_single(client, model_id: str, images: List[str],
         model=model_id,
         messages=[{"role": "user", "content": content}],
         temperature=0.1,
-        max_tokens=8000,  # 单页 OCR 上限放宽
-        timeout=120,
+        max_tokens=8000,
+        timeout=180,
+        response_format={"type": "json_schema", "json_schema": _STRUCTURED_JSON_SCHEMA},
     )
-    raw = resp.choices[0].message.content or ""
+    raw = _completion_text(resp.choices[0].message)
     return _parse_structured(raw)
 
 
@@ -652,9 +674,10 @@ def _refine_baidu_text_with_llm(raw_text: str) -> Optional[Dict[str, Any]]:
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=4000,
-            timeout=60,
+            timeout=180,
+            response_format={"type": "json_schema", "json_schema": _STRUCTURED_JSON_SCHEMA},
         )
-        raw = resp.choices[0].message.content or ""
+        raw = _completion_text(resp.choices[0].message)
         result = _parse_structured(raw)
         if result and result.get("ocr_text"):
             logger.info("百度 OCR 文本经 LLM 二次结构化成功")
@@ -792,9 +815,10 @@ def _structured_from_text(client, text: str, model_id: Optional[str] = None) -> 
             ],
             temperature=0.1,
             max_tokens=8000,
-            timeout=120,
+            timeout=180,
+            response_format={"type": "json_schema", "json_schema": _STRUCTURED_JSON_SCHEMA},
         )
-        raw = resp.choices[0].message.content or ""
+        raw = _completion_text(resp.choices[0].message)
         result = _parse_structured(raw)
         if result and result.get("ocr_text"):
             return result
@@ -843,6 +867,21 @@ def _demo_embedding(seed: int = 42) -> List[float]:
     return vec
 
 
+def _activity_model_name(model_id: Optional[str]) -> str:
+    """返回适合展示的模型名；text-llm 表示文本任务使用的通用模型。"""
+    cfg = get_config()
+    if model_id == "text-llm":
+        return cfg.LLM_MODEL
+    if model_id and model_id not in ("baidu", "text-fallback"):
+        model = settings_store.get_ocr_model_by_id(model_id)
+        if model:
+            return model.get("name") or model.get("model") or cfg.LLM_MODEL
+    primary = settings_store.get_primary_ocr_model()
+    if primary:
+        return primary.get("name") or primary.get("model") or cfg.LLM_MODEL
+    return cfg.LLM_MODEL
+
+
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -888,6 +927,15 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                 )
                 embedding = _embed_text(client, embed_input)
                 database.update_note_fields(note_id, embedding=embedding)
+                database.insert_activity(
+                    event_type="model",
+                    message=f"{get_config().EMBEDDING_MODEL} 完成笔记 #{note_id} 人工编辑向量更新",
+                    model=get_config().EMBEDDING_MODEL,
+                    device=note.get("source_device"),
+                    app=note.get("source_app"),
+                    note_id=note_id,
+                    file_name=os.path.basename(file_path),
+                )
             # 重算链接（异步，不阻塞 worker）
             _submit_link_recompute(note_id)
             database.update_note_status(note_id, "done")
@@ -975,6 +1023,17 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
             ocr_model=used_model_id,
         )
 
+        task_name = "文本结构化与向量生成" if ext in TEXT_EXTS else "OCR 识别、结构化与向量生成"
+        database.insert_activity(
+            event_type="model",
+            message=f"{_activity_model_name(used_model_id)} 完成笔记 #{note_id} 的{task_name}",
+            model=_activity_model_name(used_model_id),
+            device=note.get("source_device"),
+            app=note.get("source_app"),
+            note_id=note_id,
+            file_name=os.path.basename(file_path),
+        )
+
         # 重算候选链接（异步，不阻塞 worker 处理下一条笔记）
         _submit_link_recompute(note_id)
 
@@ -983,5 +1042,14 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
 
     except Exception as e:
         logger.exception("笔记 %s 处理失败: %s", note_id, e)
+        database.insert_activity(
+            event_type="error",
+            message=f"{_activity_model_name(model_id)} 处理笔记 #{note_id} 失败：{e}",
+            model=_activity_model_name(model_id),
+            device=note.get("source_device"),
+            app=note.get("source_app"),
+            note_id=note_id,
+            file_name=os.path.basename(note.get("file_path") or ""),
+        )
         database.update_note_status(note_id, "failed")
         return False

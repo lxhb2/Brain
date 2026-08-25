@@ -259,11 +259,13 @@ export interface SystemInfo {
     synced_notes_root: string
     thumbnail_dir: string
     db_path: string
+    cloud_root: string
   }
   storage: {
     db_bytes: number
     notes_bytes: number
     thumbnail_bytes: number
+    cloud_bytes: number
     disk_total_bytes: number
     disk_used_bytes: number
     disk_free_bytes: number
@@ -272,10 +274,51 @@ export interface SystemInfo {
   watch_folders_count: number
 }
 
+export interface AccessInfo {
+  host: string | null
+  hostname: string
+  mdns_host: string
+  ports: {
+    frontend: number
+    api: number
+    cloud_web: number
+    syncthing: number
+  }
+  urls: {
+    brain_web: string
+    cloud_web_client: string
+    api_health: string
+    syncthing_web: string
+  }
+  cloud: {
+    root: string
+    upload_subdir: string
+  }
+}
+
 export interface SourceStat {
   device: string | null
   app: string | null
   count: number
+}
+
+export interface ActivityLog {
+  id: number
+  event_type: 'model' | 'upload' | 'backup' | 'error' | string
+  message: string
+  model?: string | null
+  device?: string | null
+  app?: string | null
+  note_id?: number | null
+  file_name?: string | null
+  created_at: string
+}
+
+export interface ActivityLogsResponse {
+  items: ActivityLog[]
+  total: number
+  limit: number
+  offset: number
 }
 
 // ---------- 请求基础 ----------
@@ -498,6 +541,7 @@ export const api = {
 
   // —— 系统维护 ——
   getSystemInfo: () => getJSON<SystemInfo>('/api/system/info'),
+  getAccessInfo: () => getJSON<AccessInfo>('/api/system/access'),
   triggerScan: () => postJSON<{ scanned: boolean; new_notes: number }>('/api/system/scan', {}),
   rebuildLinks: (note_id?: number) =>
     postJSON<{ rebuilt: boolean; scope: string; links: number }>('/api/system/rebuild-links', { note_id: note_id ?? null }),
@@ -505,6 +549,18 @@ export const api = {
   vacuumDb: () => postJSON<{ vacuumed: boolean; before_bytes: number; after_bytes: number }>('/api/system/vacuum', {}),
   reprocessAll: () => postJSON<{ reprocessed: boolean; count: number }>('/api/system/reprocess-all', {}),
   getSources: () => getJSON<{ sources: SourceStat[] }>('/api/system/sources'),
+  listActivityLogs: (params: { event_type?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([key, value]) => {
+      if (value) qs.set(key, String(value))
+    })
+    return getJSON<ActivityLogsResponse>(`/api/activity-logs?${qs.toString()}`)
+  },
+  createBackup: () =>
+    postJSON<{ backup_id: number; file_name: string; path: string; size_bytes: number }>(
+      '/api/system/backup',
+      {},
+    ),
 
   // 每日归纳
   triggerDailySummary: (date?: string) =>

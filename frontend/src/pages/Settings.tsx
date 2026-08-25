@@ -1065,9 +1065,11 @@ function SystemTab({ device, onFlash }: { device: ReturnType<typeof useDeviceDet
             <InfoRow label="Python" value={info.platform.python} />
             <InfoRow label="监听文件夹" value={`${info.watch_folders_count} 个`} />
             <InfoRow label="笔记占用" value={formatBytes(info.storage.notes_bytes)} />
+            <InfoRow label="云盘占用" value={formatBytes(info.storage.cloud_bytes)} />
             <InfoRow label="数据库" value={formatBytes(info.storage.db_bytes)} />
             <InfoRow label="磁盘可用" value={formatBytes(info.storage.disk_free_bytes)} />
           </div>
+          <div className="mt-3 truncate font-mono text-[10px] text-dust">{info.paths.cloud_root}</div>
         </div>
       )}
 

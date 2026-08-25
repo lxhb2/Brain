@@ -125,6 +125,53 @@ Brain 支持三种部署场景，按你的需求选一种即可。
 
 **WSL 用户额外步骤**（让局域网设备能访问 WSL 内的服务）：
 
+WSL2 默认是 NAT 网络，`hostname -I` 得到的地址会在 Windows/WSL 重启后变化。
+不要把某个固定 WSL IP 写死到 `netsh interface portproxy` 里。在 Windows
+PowerShell（管理员）执行一次：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\fix-wsl-portproxy.ps1 -RegisterTask
+```
+
+这个脚本会等待 WSL 启动完成，读取当前 WSL IPv4，刷新 `8080 -> 8080`
+与 `8000 -> 8000` 的 portproxy 规则，并创建防火墙规则。它还会注册一个
+登录时运行的任务；之后物理机 IP 变化、WSL IP 变化或重启后，只需要用
+新的物理机 IP 访问，不需要再迁移或重建数据。
+
+如果你的发行版支持镜像网络（Windows 11 / WSL 2.0+），也可以在
+`C:\Users\<用户>\.wslconfig` 中启用：
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+随后在 PowerShell 执行 `wsl --shutdown` 并重新启动 WSL。镜像模式下
+Linux 监听的 8080 会像 Windows 本机端口一样暴露，通常不再需要 portproxy；
+但部分 VPN/防火墙组合仍需单独验证。
+
+### 固定数据目录
+
+默认数据仍在项目下的 `data/`。如果项目目录可能移动、重新 clone 或被
+清理工具处理，建议把数据放到 Linux 文件系统里的固定路径。先停服务并
+复制旧数据：
+
+```bash
+./scripts/deploy.sh --stop
+sudo mkdir -p /var/lib/brain
+sudo rsync -aHAX data/ /var/lib/brain/
+echo 'BRAIN_DATA_DIR=/var/lib/brain' >> .env
+./scripts/deploy.sh --update
+```
+
+容器内路径仍然是 `/app/data`，数据库中的文件路径不会改变，因此历史
+上传的原图和缩略图会继续可见。注意：请放在 WSL 的 Linux 文件系统
+（如 `/var/lib/brain`），不要长期放在 `/mnt/c` 或 `/mnt/f` 这类
+Windows 挂载路径上；后者性能差，且跨系统权限行为更不稳定。
+
+**WSL 开机自启**（systemd 方式）：
+
 ```powershell
 # 在 Windows PowerShell（管理员）里执行
 # 获取 WSL 的 IP
@@ -150,6 +197,11 @@ sudo cp scripts/brain.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now brain
 ```
+
+> 本机当前部署使用 `/home/lxhb/.local/var/brain`，实际保存在
+> `G:\WSL\Ubuntu-22.04\ext4.vhdx`。私有云盘使用长期维护的 SFTPGo，
+> 局域网固定名是 `http://brain.local:8090/web/client`。完整运维说明见
+> [docs/OPERATIONS.md](docs/OPERATIONS.md)。
 
 ### 场景二：云服务器 + HTTPS（生产部署）
 

@@ -68,14 +68,12 @@ def _worker_loop(worker_idx: int) -> None:
         # 去重：正在处理中的跳过
         with _processing_ids_lock:
             if note_id in _processing_ids:
-                _processing_queue.task_done()
                 continue
             _processing_ids.add(note_id)
         try:
             note = database.get_note(note_id)
             # 跳过已 done 的，避免重复处理
             if note and note.get("status") == "done":
-                _processing_queue.task_done()
                 continue
             ocr_processor.process_note(note_id)
         except Exception as e:
@@ -177,6 +175,16 @@ def full_scan() -> int:
                     continue
                 enqueue_note(note_id)
                 new_count += 1
+                meta = meta or {}
+                fname = os.path.basename(fpath)
+                database.insert_activity(
+                    event_type="upload",
+                    message=f"扫描发现 {meta.get('device', 'unknown')}-{meta.get('app', 'unknown')} 文件 {fname}",
+                    device=meta.get("device"),
+                    app=meta.get("app"),
+                    note_id=note_id,
+                    file_name=fname,
+                )
     logger.info("full_scan 完成，新入队 %d 条", new_count)
     return new_count
 
@@ -241,14 +249,20 @@ def generate_daily_summary(target_date: Optional[str] = None) -> Optional[Dict[s
             model=cfg.QA_MODEL or cfg.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=1000,
-            timeout=60,
+            max_tokens=3000,
+            timeout=180,
         )
         content = (resp.choices[0].message.content or "").strip()
         if not content:
             logger.warning("每日归纳：LLM 返回空内容")
             return None
         summary_id = database.upsert_daily_summary(target_date, content, note_ids)
+        cfg = get_config()
+        database.insert_activity(
+            event_type="model",
+            message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成每日归纳，覆盖 {len(notes)} 条笔记",
+            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+        )
         logger.info("每日归纳完成：%s 共 %d 条笔记，归纳 id=%s",
                     target_date, len(notes), summary_id)
         return {"summary_id": summary_id, "notes_count": len(notes)}
@@ -342,6 +356,22 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,
     )
 
+    # 每日 02:30 自动备份数据库；备份函数自身会写活动日志
+    def _backup_job():
+        try:
+            result = database.create_database_backup()
+            logger.info("自动备份完成: %s", result["file_name"])
+        except Exception as e:
+            logger.exception("自动备份失败：%s", e)
+
+    sched.add_job(
+        _backup_job,
+        trigger=CronTrigger(hour=2, minute=30),
+        id="brain_daily_backup",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     # 每小时重试失败的 OCR
     sched.add_job(
         retry_failed_ocr,
@@ -354,7 +384,7 @@ def start_scheduler() -> None:
     sched.start()
     _scheduler = sched
     logger.info(
-        "APScheduler 已启动 (Asia/Shanghai)：03:00 全量扫描 / 03:30 衰减 / 23:00 每日归纳 / 每小时重试失败"
+        "APScheduler 已启动 (Asia/Shanghai)：02:30 备份 / 03:00 全量扫描 / 03:30 衰减 / 23:00 每日归纳 / 每小时重试失败"
     )
 
 

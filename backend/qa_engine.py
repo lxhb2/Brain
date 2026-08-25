@@ -106,8 +106,8 @@ def _generate_card_draft(
             model=cfg.QA_MODEL or cfg.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=800,
-            timeout=30,
+            max_tokens=2500,
+            timeout=120,
         )
         raw = resp.choices[0].message.content or ""
         # 剥离 markdown 代码围栏
@@ -498,8 +498,8 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                 messages=messages,
                 tools=_TOOLS if use_tools else None,
                 temperature=0.2,
-                max_tokens=1200,
-                timeout=60,
+                max_tokens=3000,
+                timeout=180,
             )
             msg = resp.choices[0].message
 
@@ -563,6 +563,11 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     qa_id = database.insert_qa(
         question=question, answer=answer, citations=citations, session_id=session_id
     )
+    database.insert_activity(
+        event_type="model",
+        message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id}，引用 {len(citations)} 条笔记",
+        model=cfg.QA_MODEL or cfg.LLM_MODEL,
+    )
 
     # 异步生成知识卡片草稿（不阻塞主流程，失败不影响 QA 结果）
     card_draft: Optional[Dict[str, Any]] = None
@@ -583,6 +588,12 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                     "qa_id": qa_id,
                     "session_id": session_id,
                 }
+                database.insert_activity(
+                    event_type="model",
+                    message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id} 的知识卡片草稿「{card_draft.get('title', '')}」",
+                    model=cfg.QA_MODEL or cfg.LLM_MODEL,
+                    note_id=source_note_ids[0] if source_note_ids else None,
+                )
     except Exception as e:
         logger.warning("卡片草稿生成失败（不影响主流程）: %s", e)
 

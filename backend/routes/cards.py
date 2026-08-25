@@ -97,8 +97,8 @@ def _evaluate_user_answer(
             model=cfg.QA_MODEL or cfg.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=400,
-            timeout=20,
+            max_tokens=2000,
+            timeout=120,
         )
         raw = resp.choices[0].message.content or ""
         s = raw.strip()

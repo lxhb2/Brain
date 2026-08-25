@@ -11,7 +11,7 @@ import shutil
 import sys
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 import database
@@ -98,6 +98,10 @@ def system_info() -> Dict[str, Any]:
     # synced_notes 目录占用
     notes_size = _dir_size(cfg.SYNCED_NOTES_ROOT)
     thumb_size = _dir_size(cfg.THUMBNAIL_DIR)
+    cloud_root = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(cfg.SYNCED_NOTES_ROOT)), "cloud")
+    )
+    cloud_size = _dir_size(cloud_root)
     # 磁盘可用空间
     disk = shutil.disk_usage(os.path.abspath(cfg.SYNCED_NOTES_ROOT))
     relay = settings_store.get_relay_config()
@@ -113,17 +117,58 @@ def system_info() -> Dict[str, Any]:
             "synced_notes_root": os.path.abspath(cfg.SYNCED_NOTES_ROOT),
             "thumbnail_dir": os.path.abspath(cfg.THUMBNAIL_DIR),
             "db_path": os.path.abspath(cfg.DB_PATH),
+            "cloud_root": cloud_root,
         },
         "storage": {
             "db_bytes": db_size,
             "notes_bytes": notes_size,
             "thumbnail_bytes": thumb_size,
+            "cloud_bytes": cloud_size,
             "disk_total_bytes": disk.total,
             "disk_used_bytes": disk.used,
             "disk_free_bytes": disk.free,
         },
         "relay": relay,
         "watch_folders_count": len([f for f in settings_store.get_watch_folders() if f.get("enabled", True)]),
+    }
+
+
+@router.get("/system/access")
+def access_info(request: Request) -> Dict[str, Any]:
+    """访问地址解析：返回当前 Host 对应的 Brain/云盘/Syncthing 地址。"""
+    host = (request.headers.get("host") or "").strip()
+    hostname = host
+    if hostname.startswith("["):
+        hostname = hostname[1:].split("]")[0]
+    elif ":" in hostname:
+        hostname = hostname.rsplit(":", 1)[0]
+    if not hostname:
+        hostname = "brain.local"
+
+    cfg = get_config()
+    cloud_root = os.path.abspath(
+        os.path.join(os.path.dirname(os.path.abspath(cfg.SYNCED_NOTES_ROOT)), "cloud")
+    )
+    return {
+        "host": host or None,
+        "hostname": hostname,
+        "mdns_host": "brain.local",
+        "ports": {
+            "frontend": 8080,
+            "api": 8000,
+            "cloud_web": 8090,
+            "syncthing": 8384,
+        },
+        "urls": {
+            "brain_web": f"http://{hostname}:8080",
+            "cloud_web_client": f"http://{hostname}:8090/web/client",
+            "api_health": f"http://{hostname}:8000/api/health",
+            "syncthing_web": f"http://{hostname}:8384",
+        },
+        "cloud": {
+            "root": cloud_root,
+            "upload_subdir": "from-brain",
+        },
     }
 
 
@@ -257,6 +302,29 @@ def sources() -> Dict[str, Any]:
             for r in rows
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# 轻量活动日志与备份
+# ---------------------------------------------------------------------------
+@router.get("/activity-logs")
+def activity_logs(
+    event_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    """列出最近的模型任务、上传、备份和错误记录。"""
+    return database.list_activity_logs(
+        event_type=event_type,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/system/backup")
+def create_backup() -> Dict[str, Any]:
+    """手动创建一次 SQLite 在线备份。"""
+    return database.create_database_backup()
 
 
 # ---------------------------------------------------------------------------

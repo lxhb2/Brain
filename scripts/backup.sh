@@ -14,8 +14,14 @@ set -euo pipefail
 
 # ---- 配置 ----
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DB_PATH="${PROJECT_DIR}/data/brain.db"
-BACKUP_DIR="${PROJECT_DIR}/data/backups"
+# 定时任务不会加载用户环境变量，这里从项目 .env 恢复配置
+if [[ -f "${PROJECT_DIR}/.env" ]]; then
+    env_data_dir="$(sed -n 's/^[[:space:]]*BRAIN_DATA_DIR=[[:space:]]*//p' "${PROJECT_DIR}/.env" | tail -n 1 | tr -d '\"' | tr -d "'")"
+    [[ -n "$env_data_dir" ]] && export BRAIN_DATA_DIR="$env_data_dir"
+fi
+DATA_DIR="${BRAIN_DATA_DIR:-${PROJECT_DIR}/data}"
+DB_PATH="${DATA_DIR}/brain.db"
+BACKUP_DIR="${DATA_DIR}/backups"
 KEEP_DAYS=14       # 本地保留 14 天
 MAX_COPIES=14      # 最多保留 14 份
 
