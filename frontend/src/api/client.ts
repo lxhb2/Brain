@@ -163,6 +163,47 @@ export interface Stats {
   qa_total: number
   feedback_total: number
   queue_size: number
+  growth: GrowthStats
+}
+
+export interface GrowthStats {
+  classified_notes: number
+  practice_notes: number
+  reference_notes: number
+  knowledge_density: number
+  call_frequency: number
+  validation_depth: number
+  cards_total: number
+  cards_validated: number
+  due_cards: number
+  latest_review_date: string | null
+}
+
+export interface GrowthReview {
+  id: number
+  review_date: string
+  content: {
+    headline?: string
+    kept?: { title: string; why: string }[]
+    mistakes?: { title: string; correction: string; next_action: string }[]
+    adjustments?: string[]
+    review_questions?: string[]
+    skill_updates?: { skill: string; level: string; reason: string }[]
+    system_metrics?: Record<string, unknown>
+    due_card_ids?: number[]
+  }
+  model: string | null
+  note_ids: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeCardReview extends KnowledgeCard {
+  verdict: string | null
+  review_count: number
+  last_reviewed_at: string | null
+  next_review_at: string | null
+  mastery_level: string | null
 }
 
 export interface Health {
@@ -522,6 +563,14 @@ export const api = {
 
   // 系统
   getStats: () => getJSON<Stats>('/api/stats'),
+  getDueCards: (limit = 20) => getJSON<{ items: KnowledgeCardReview[] }>(`/api/cards/due/review?limit=${limit}`),
+  runGrowthTriage: (limit = 3) => postJSON<{ found: number; triaged: number }>(`/api/system/growth-triage?limit=${limit}`, {}),
+  runGrowthReview: (date?: string) => postJSON<{ generated: boolean; reason?: string; review_id?: number }>(
+    `/api/system/growth-review${date ? `?date=${encodeURIComponent(date)}` : ''}`,
+    {},
+  ),
+  listGrowthReviews: (limit = 7) => getJSON<{ reviews: Omit<GrowthReview, 'content'>[] }>(`/api/system/growth-reviews?limit=${limit}`),
+  getGrowthReview: (date: string) => getJSON<GrowthReview>(`/api/system/growth-reviews/${date}`),
   getHealth: () => getJSON<Health>('/api/health'),
 
   // —— 设置 ——

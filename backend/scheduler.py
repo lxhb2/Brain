@@ -20,6 +20,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
 import database
+import growth
 import ocr_processor
 from config import get_config, get_watch_dirs_runtime
 
@@ -352,6 +353,22 @@ def start_scheduler() -> None:
         generate_daily_summary,
         trigger=CronTrigger(hour=23, minute=0),
         id="brain_daily_summary",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
+    # 每日 23:05 分诊少量积压笔记，并生成成长审核
+    def _growth_job():
+        try:
+            result = growth.run_daily_maintenance()
+            logger.info("每日成长维护完成：%s", result)
+        except Exception as e:
+            logger.exception("每日成长维护失败：%s", e)
+
+    sched.add_job(
+        _growth_job,
+        trigger=CronTrigger(hour=23, minute=5),
+        id="brain_growth_maintenance",
         replace_existing=True,
         misfire_grace_time=3600,
     )

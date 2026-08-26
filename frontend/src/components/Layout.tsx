@@ -9,6 +9,7 @@ import {
   Layers,
   Smartphone,
   ScrollText,
+  Compass,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
@@ -157,6 +158,7 @@ function DesktopSidebar() {
         <NavItem to="/graph" label="知识图谱" icon={<Network className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/qa" label="智能问答" icon={<MessagesSquare className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/cards" label="知识卡片" icon={<Layers className="h-4 w-4" strokeWidth={1.5} />} />
+        <NavItem to="/growth" label="成长" icon={<Compass className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/notes" label="笔记浏览" icon={<NotebookPen className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/connect" label="手机连接" icon={<Smartphone className="h-4 w-4" strokeWidth={1.5} />} />
         <NavItem to="/logs" label="日志" icon={<ScrollText className="h-4 w-4" strokeWidth={1.5} />} />
@@ -179,6 +181,11 @@ function DesktopSidebar() {
             />
             <StatRow label="候选链接" value={stats.links_total} accent="text-azure" />
             <StatRow label="问答记录" value={stats.qa_total} accent="text-starlight" />
+            <StatRow
+              label="待复验"
+              value={stats.growth?.due_cards ?? 0}
+              accent={(stats.growth?.due_cards ?? 0) > 0 ? 'text-amber' : 'text-dust'}
+            />
           </div>
         ) : (
           <div className="space-y-2.5">

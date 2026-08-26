@@ -104,6 +104,13 @@ class EditNoteRequest(BaseModel):
     ocr_text: Optional[str] = None
     summary: Optional[str] = None
     keywords: Optional[List[str]] = None
+    knowledge_kind: Optional[str] = None
+    practice_status: Optional[str] = None
+    condition_text: Optional[str] = None
+    action_text: Optional[str] = None
+    consequence_text: Optional[str] = None
+    evidence_text: Optional[str] = None
+    next_action_text: Optional[str] = None
     recompute_embedding: bool = True  # 是否同步重算 embedding 和链接
 
 
@@ -131,6 +138,19 @@ def edit_note(note_id: int, body: EditNoteRequest):
         updates["summary"] = body.summary.strip()
     if body.keywords is not None:
         updates["keywords"] = [k.strip() for k in body.keywords if k.strip()]
+
+    if body.knowledge_kind is not None:
+        if body.knowledge_kind not in ("practice", "reference", "noise", "unclassified"):
+            raise HTTPException(400, "knowledge_kind 必须是 practice/reference/noise/unclassified")
+        updates["knowledge_kind"] = body.knowledge_kind
+    if body.practice_status is not None:
+        if body.practice_status not in ("done", "attempted", "planned", "external", "unknown"):
+            raise HTTPException(400, "practice_status 值无效")
+        updates["practice_status"] = body.practice_status
+    for field in ("condition_text", "action_text", "consequence_text", "evidence_text", "next_action_text"):
+        value = getattr(body, field)
+        if value is not None:
+            updates[field] = value.strip()
     updates["manually_edited"] = True
 
     if not any(k != "manually_edited" for k in updates):
@@ -185,6 +205,23 @@ def edit_note(note_id: int, body: EditNoteRequest):
         keywords=updates.get("keywords"),
         manually_edited=True,
     )
+
+    insight_fields = (
+        "knowledge_kind", "practice_status", "condition_text",
+        "action_text", "consequence_text", "evidence_text", "next_action_text",
+    )
+    if any(field in updates for field in insight_fields):
+        database.update_note_insight(
+            note_id,
+            knowledge_kind=updates.get("knowledge_kind") or note.get("knowledge_kind") or "unclassified",
+            practice_status=updates.get("practice_status") or note.get("practice_status") or "unknown",
+            condition_text=updates.get("condition_text", note.get("condition_text")),
+            action_text=updates.get("action_text", note.get("action_text")),
+            consequence_text=updates.get("consequence_text", note.get("consequence_text")),
+            evidence_text=updates.get("evidence_text", note.get("evidence_text")),
+            next_action_text=updates.get("next_action_text", note.get("next_action_text")),
+            confidence=float(note.get("confidence") or 0.5),
+        )
 
     # 重算 embedding 和链接
     embedding_info = {"recomputed": False, "error": None}

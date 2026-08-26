@@ -563,6 +563,12 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     qa_id = database.insert_qa(
         question=question, answer=answer, citations=citations, session_id=session_id
     )
+    cited_note_ids = [c.get("note_id") for c in citations if c.get("note_id")]
+    if cited_note_ids:
+        try:
+            database.mark_notes_used(cited_note_ids)
+        except Exception as e:
+            logger.warning("累计笔记调用频次失败 qa_id=%s: %s", qa_id, e)
     database.insert_activity(
         event_type="model",
         message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id}，引用 {len(citations)} 条笔记",

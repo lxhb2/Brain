@@ -353,6 +353,32 @@ docker compose up -d cloud
 
 不要使用 `latest` 作为长期生产版本，避免一次升级引入不兼容变更。
 
+## 成长闭环
+
+Brain 现在除了存储和检索，还提供“成长”页面：
+
+- 入库分诊：把笔记分为 `practice`（实操经验）、`reference`（外部资料）和 `noise`（噪音），避免外部资料混入个人经验。
+- 经验结构化：保存条件、动作、后果、证据和下一步动作。
+- 调用统计：问答引用某条笔记时，自动累计该笔记的调用次数。
+- 卡片复验：问答卡片根据验证结果进入间隔复验队列。
+- 每日审核：每天 23:05 自动生成本日已沉淀内容、错题本和调整方案。
+
+手动入口：
+
+```text
+http://127.0.0.1:8080/growth
+```
+
+也可以调用：
+
+```bash
+curl -X POST 'http://127.0.0.1:8000/api/system/growth-triage?limit=3'
+curl -X POST 'http://127.0.0.1:8000/api/system/growth-review'
+curl 'http://127.0.0.1:8000/api/system/growth-reviews?limit=7'
+```
+
+分诊会调用本地 Qwen 模型；为避免占满模型，后台每次最多处理 3 条未分类笔记。
+
 ## 本地 LM Studio 模型
 
 Brain 当前使用本机 LM Studio 提供对话模型和向量模型：

@@ -133,6 +133,12 @@ def list_cards(limit: int = 50, offset: int = 0, session_id: Optional[str] = Non
     return res
 
 
+@router.get("/due/review")
+def list_due_for_review(limit: int = 20):
+    """返回到期或尚未安排复验的卡片。"""
+    return {"items": database.list_due_cards(limit=limit)}
+
+
 @router.get("/{card_id}")
 def get_card(card_id: int):
     """获取卡片详情。"""
@@ -194,6 +200,24 @@ def finalize_card(body: FinalizeCardRequest):
     )
     if not card_id:
         raise HTTPException(status_code=500, detail="卡片落库失败")
+
+    mastery = "learning"
+    interval_days = 2
+    if verdict == "correct":
+        mastery = "validated"
+        interval_days = 3
+    elif verdict == "needs_supplement":
+        mastery = "shaky"
+        interval_days = 1
+    try:
+        database.update_card_review(
+            card_id=card_id,
+            verdict=verdict,
+            mastery_level=mastery,
+            interval_days=interval_days,
+        )
+    except Exception as exc:
+        logger.warning("记录卡片复验队列失败 card_id=%s: %s", card_id, exc)
 
     # 自动建立 card→note 链接
     linked_notes = 0

@@ -14,7 +14,7 @@ import math
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -281,6 +281,58 @@ def init_db() -> None:
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_card_links_source ON card_links(source_type, source_id);")
         c.execute("CREATE INDEX IF NOT EXISTS idx_card_links_target ON card_links(target_type, target_id);")
+
+        # —— 成长运营迁移 ——
+        # notes 里的新字段用于区分实操经验和外部资料，并保存“活知识”的结构。
+        for column in (
+            "knowledge_kind TEXT DEFAULT 'unclassified'",
+            "practice_status TEXT DEFAULT 'unknown'",
+            "condition_text TEXT",
+            "action_text TEXT",
+            "consequence_text TEXT",
+            "evidence_text TEXT",
+            "next_action_text TEXT",
+            "confidence REAL DEFAULT 0.5",
+            "triaged_at TEXT",
+            "use_count INTEGER DEFAULT 0",
+            "last_used_at TEXT",
+        ):
+            name = column.split()[0]
+            try:
+                c.execute(f"SELECT {name} FROM notes LIMIT 0;")
+            except sqlite3.OperationalError:
+                logger.info("迁移：为 notes 表添加 %s 列", name)
+                c.execute(f"ALTER TABLE notes ADD COLUMN {column};")
+
+        # 卡片记录一次验证结论和下一次复习时间，形成间隔复验队列。
+        for column in (
+            "verdict TEXT",
+            "review_count INTEGER DEFAULT 0",
+            "last_reviewed_at TEXT",
+            "next_review_at TEXT",
+            "mastery_level TEXT DEFAULT 'novice'",
+        ):
+            name = column.split()[0]
+            try:
+                c.execute(f"SELECT {name} FROM knowledge_cards LIMIT 0;")
+            except sqlite3.OperationalError:
+                logger.info("迁移：为 knowledge_cards 表添加 %s 列", name)
+                c.execute(f"ALTER TABLE knowledge_cards ADD COLUMN {column};")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_cards_next_review ON knowledge_cards(next_review_at);")
+
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS growth_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                review_date TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                model TEXT,
+                note_ids TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +717,77 @@ def get_done_notes_with_embeddings() -> List[Dict[str, Any]]:
             """
         ).fetchall()
         return [r for r in (_row_to_dict(row) for row in rows) if r is not None]
+
+
+def update_note_insight(
+    note_id: int,
+    *,
+    knowledge_kind: str,
+    practice_status: str = "unknown",
+    condition_text: Optional[str] = None,
+    action_text: Optional[str] = None,
+    consequence_text: Optional[str] = None,
+    evidence_text: Optional[str] = None,
+    next_action_text: Optional[str] = None,
+    confidence: float = 0.5,
+) -> None:
+    """保存入库分诊与经验结构化结果。"""
+    with _db_lock, get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE notes SET knowledge_kind = ?, practice_status = ?,
+              condition_text = ?, action_text = ?, consequence_text = ?,
+              evidence_text = ?, next_action_text = ?, confidence = ?,
+              triaged_at = ?
+            WHERE id = ?;
+            """,
+            (
+                knowledge_kind,
+                practice_status,
+                condition_text,
+                action_text,
+                consequence_text,
+                evidence_text,
+                next_action_text,
+                max(0.0, min(1.0, float(confidence))),
+                _now(),
+                note_id,
+            ),
+        )
+
+
+def list_unclassified_notes(limit: int = 3) -> List[Dict[str, Any]]:
+    """列出待分诊的已完成笔记。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM notes
+            WHERE status = 'done'
+              AND (knowledge_kind IS NULL OR knowledge_kind = 'unclassified')
+            ORDER BY created_at DESC LIMIT ?;
+            """,
+            (max(1, min(int(limit), 20)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_notes_used(note_ids: Sequence[int]) -> int:
+    """问答引用后累计调用频次。"""
+    ids = list(dict.fromkeys(int(n) for n in note_ids if n))
+    if not ids:
+        return 0
+    now = _now()
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        for note_id in ids:
+            cur.execute(
+                """
+                UPDATE notes SET use_count = use_count + 1, last_used_at = ?
+                WHERE id = ?;
+                """,
+                (now, note_id),
+            )
+        return cur.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -1171,6 +1294,32 @@ def get_stats() -> Dict[str, Any]:
         links_total = conn.execute("SELECT COUNT(*) AS n FROM links;").fetchone()["n"]
         qa_total = conn.execute("SELECT COUNT(*) AS n FROM qa_history;").fetchone()["n"]
         feedback_total = conn.execute("SELECT COUNT(*) AS n FROM feedback;").fetchone()["n"]
+        classified = conn.execute(
+            "SELECT COUNT(*) AS n FROM notes WHERE status='done' AND knowledge_kind != 'unclassified';"
+        ).fetchone()["n"]
+        practices = conn.execute(
+            "SELECT COUNT(*) AS n FROM notes WHERE status='done' AND knowledge_kind='practice';"
+        ).fetchone()["n"]
+        references = conn.execute(
+            "SELECT COUNT(*) AS n FROM notes WHERE status='done' AND knowledge_kind='reference';"
+        ).fetchone()["n"]
+        used_notes = conn.execute(
+            "SELECT COUNT(*) AS n FROM notes WHERE status='done' AND use_count > 0;"
+        ).fetchone()["n"]
+        cards_total = conn.execute("SELECT COUNT(*) AS n FROM knowledge_cards;").fetchone()["n"]
+        cards_validated = conn.execute(
+            "SELECT COUNT(*) AS n FROM knowledge_cards WHERE verdict='correct';"
+        ).fetchone()["n"]
+        due_cards = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM knowledge_cards
+            WHERE next_review_at IS NULL OR next_review_at <= ?;
+            """,
+            (_now(),),
+        ).fetchone()["n"]
+        latest_growth_review = conn.execute(
+            "SELECT review_date FROM growth_reviews ORDER BY review_date DESC LIMIT 1;"
+        ).fetchone()
     return {
         "notes_total": int(notes_total),
         "notes_done": int(notes_done),
@@ -1180,7 +1329,120 @@ def get_stats() -> Dict[str, Any]:
         "qa_total": int(qa_total),
         "feedback_total": int(feedback_total),
         "queue_size": _queue_size(),
+        "growth": {
+            "classified_notes": int(classified),
+            "practice_notes": int(practices),
+            "reference_notes": int(references),
+            "knowledge_density": round(float(practices) / notes_done, 4) if notes_done else 0,
+            "call_frequency": round(float(used_notes) / notes_done, 4) if notes_done else 0,
+            "validation_depth": round(float(cards_validated) / cards_total, 4) if cards_total else 0,
+            "cards_total": int(cards_total),
+            "cards_validated": int(cards_validated),
+            "due_cards": int(due_cards),
+            "latest_review_date": latest_growth_review["review_date"] if latest_growth_review else None,
+        },
     }
+
+
+def upsert_growth_review(
+    *,
+    review_date: str,
+    content: Dict[str, Any],
+    model: Optional[str] = None,
+    note_ids: Sequence[int],
+) -> int:
+    """写入或更新某天 AI 成长审核。"""
+    payload = json.dumps(content, ensure_ascii=False)
+    ids = ",".join(str(int(n)) for n in note_ids)
+    now = _now()
+    with _db_lock, get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO growth_reviews (review_date, content, model, note_ids, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(review_date) DO UPDATE SET
+              content = excluded.content, model = excluded.model,
+              note_ids = excluded.note_ids, updated_at = excluded.updated_at;
+            """,
+            (review_date, payload, model, ids, now, now),
+        )
+        row = conn.execute(
+            "SELECT id FROM growth_reviews WHERE review_date = ?;", (review_date,)
+        ).fetchone()
+        return int(row["id"])
+
+
+def get_growth_review(review_date: str) -> Optional[Dict[str, Any]]:
+    """获取某天的成长审核。"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM growth_reviews WHERE review_date = ?;", (review_date,)
+        ).fetchone()
+        result = _row_to_dict(row)
+        if result and isinstance(result.get("content"), str):
+            try:
+                result["content"] = json.loads(result["content"])
+            except json.JSONDecodeError:
+                pass
+        return result
+
+
+def list_growth_reviews(limit: int = 7) -> List[Dict[str, Any]]:
+    """列出最近 N 天的成长审核（不含大正文）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, review_date, model, note_ids, created_at, updated_at
+            FROM growth_reviews ORDER BY review_date DESC LIMIT ?;
+            """,
+            (max(1, min(int(limit), 31)),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_card_review(
+    *,
+    card_id: int,
+    verdict: str,
+    mastery_level: str,
+    interval_days: int = 1,
+) -> None:
+    """记录卡片验证结论，并安排下一次间隔复验。"""
+    reviewed_at = datetime.now(timezone.utc)
+    next_at = reviewed_at + timedelta(days=max(1, int(interval_days)))
+    with _db_lock, get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE knowledge_cards SET verdict = ?, mastery_level = ?,
+              review_count = review_count + 1, last_reviewed_at = ?,
+              next_review_at = ?
+            WHERE id = ?;
+            """,
+            (verdict, mastery_level, reviewed_at.isoformat(), next_at.isoformat(), card_id),
+        )
+
+
+def list_due_cards(limit: int = 20) -> List[Dict[str, Any]]:
+    """返回需要复验的知识卡片。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM knowledge_cards
+            WHERE next_review_at IS NULL OR next_review_at <= ?
+            ORDER BY next_review_at IS NOT NULL, created_at DESC LIMIT ?;
+            """,
+            (_now(), max(1, min(int(limit), 100))),
+        ).fetchall()
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if isinstance(item.get("source_note_ids"), str):
+                try:
+                    item["source_note_ids"] = json.loads(item["source_note_ids"])
+                except json.JSONDecodeError:
+                    item["source_note_ids"] = []
+            items.append(item)
+        return items
 
 
 def _queue_size() -> int:

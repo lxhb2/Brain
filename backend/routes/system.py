@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 import database
 import graph_api
+import growth
 import scheduler
 import settings_store
 from config import get_config
@@ -226,10 +227,40 @@ def trigger_daily_summary(date: str | None = None) -> Dict[str, Any]:
     return {"generated": True, **result}
 
 
+@router.post("/system/growth-review")
+def trigger_growth_review(date: str | None = None) -> Dict[str, Any]:
+    """手动触发成长审核。date 使用 YYYY-MM-DD，默认今天。"""
+    result = growth.generate_daily_review(target_date=date)
+    if not result:
+        return {"generated": False, "reason": "没有可审核的笔记/卡片，或本地模型返回失败"}
+    return {"generated": True, **result}
+
+
+@router.post("/system/growth-triage")
+def trigger_growth_triage(limit: int = 3) -> Dict[str, Any]:
+    """手动分诊少量未分类笔记。"""
+    return growth.triage_pending_notes(limit=max(1, min(limit, 10)))
+
+
 @router.get("/system/daily-summaries")
 def list_daily_summaries(limit: int = 7) -> Dict[str, Any]:
     """列出最近 N 天的归纳。"""
     return {"summaries": database.list_recent_daily_summaries(limit=limit)}
+
+
+@router.get("/system/growth-reviews")
+def list_growth_reviews(limit: int = 7) -> Dict[str, Any]:
+    """列出最近 N 天成长审核索引。"""
+    return {"reviews": database.list_growth_reviews(limit=limit)}
+
+
+@router.get("/system/growth-reviews/{review_date}")
+def get_growth_review(review_date: str) -> Dict[str, Any]:
+    """获取某天成长审核正文。"""
+    review = database.get_growth_review(review_date)
+    if not review:
+        raise HTTPException(status_code=404, detail="该日期无成长审核")
+    return review
 
 
 @router.get("/system/daily-summaries/{date}")

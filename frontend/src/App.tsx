@@ -7,6 +7,7 @@ import NoteDetail from "@/pages/NoteDetail";
 import Settings from "@/pages/Settings";
 import Cards from "@/pages/Cards";
 import CardDetail from "@/pages/CardDetail";
+import Growth from "@/pages/Growth";
 import Connect from "@/pages/Connect";
 import Logs from "@/pages/Logs";
 
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/notes/:id" element={<NoteDetail />} />
           <Route path="/cards" element={<Cards />} />
           <Route path="/cards/:id" element={<CardDetail />} />
+          <Route path="/growth" element={<Growth />} />
           <Route path="/connect" element={<Connect />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/settings" element={<Settings />} />
