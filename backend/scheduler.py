@@ -401,7 +401,8 @@ def start_scheduler() -> None:
     sched.start()
     _scheduler = sched
     logger.info(
-        "APScheduler 已启动 (Asia/Shanghai)：02:30 备份 / 03:00 全量扫描 / 03:30 衰减 / 23:00 每日归纳 / 每小时重试失败"
+        "APScheduler 已启动 (Asia/Shanghai)：02:30 备份 / 03:00 全量扫描 / 03:30 衰减 / "
+        "23:00 每日归纳 / 23:05 成长维护 / 每小时重试失败"
     )
 
 

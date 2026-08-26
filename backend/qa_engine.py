@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
 from typing import Any, Dict, List, Optional
 
 import database
@@ -41,6 +42,7 @@ _SYSTEM_PROMPT = (
     "- add_memory：把用户提到的偏好、术语、事实存为长期记忆（自我成长）\n"
     "限制：单次回答最多调用 3 次工具，避免无限循环。"
 )
+_CITATION_RE = re.compile(r"\[(\d+)\]")
 
 # 多轮对话最多回溯几轮
 _MAX_HISTORY_TURNS = 5
@@ -224,14 +226,44 @@ def _build_context(hits: List[Dict[str, Any]]) -> str:
         if len(ocr) > 800:
             ocr = ocr[:800] + "..."
         summary = (n.get("summary") or "").strip()
+        structured = []
+        for label, field in (
+            ("条件", "condition_text"),
+            ("动作", "action_text"),
+            ("结果", "consequence_text"),
+            ("证据", "evidence_text"),
+            ("下一步", "next_action_text"),
+        ):
+            value = (n.get(field) or "").strip()
+            if value:
+                structured.append(f"{label}: {value}")
         block = (
             f"--- 笔记 #{n['id']} ---\n"
             f"标题: {n.get('title') or '(未命名)'}\n"
+            f"类型: {n.get('knowledge_kind') or 'unclassified'} / "
+            f"状态: {n.get('practice_status') or 'unknown'}\n"
             f"摘要: {summary}\n"
             f"OCR 内容:\n{ocr}\n"
         )
+        if structured:
+            block += f"经验结构:\n" + "\n".join(structured) + "\n"
         blocks.append(block)
     return "\n".join(blocks)
+
+
+def _build_cards_context(cards: List[Dict[str, Any]]) -> str:
+    """把已验证的知识卡片注入问答，让沉淀结论可以被复用。"""
+    if not cards:
+        return ""
+    lines = ["=== 已沉淀知识卡片 ==="]
+    for card in cards:
+        lines.append(
+            f"[卡片 #{card['id']}] {card.get('title')}\n"
+            f"结论: {card.get('key_conclusion')}\n"
+            f"场景: {card.get('application_scenario') or ''}\n"
+            f"复验状态: {card.get('mastery_level') or 'novice'}"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def _build_memory_context(memories: List[Dict[str, Any]]) -> str:
@@ -295,17 +327,51 @@ def _make_citations(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+def _merge_tool_hits(current_hits: List[Dict[str, Any]], raw_result: str, limit: int = 8):
+    """把 Agent 工具检索到的笔记合并回引用列表。"""
+    try:
+        data = json.loads(raw_result)
+    except (json.JSONDecodeError, TypeError):
+        return current_hits
+    by_id = {int(hit["note"]["id"]): hit for hit in current_hits}
+    for item in data.get("notes", []):
+        note_id = int(item.get("id") or 0)
+        if not note_id or note_id in by_id:
+            continue
+        note = {
+            "id": note_id,
+            "title": item.get("title") or "(未命名)",
+            "summary": item.get("summary") or "",
+            "ocr_text": item.get("ocr_text_preview") or "",
+        }
+        by_id[note_id] = {"score": float(item.get("score") or 0.0), "note": note}
+    merged = sorted(by_id.values(), key=lambda hit: float(hit.get("score", 0)), reverse=True)
+    return merged[:limit]
+
+
+def _cited_note_ids(answer: str) -> List[int]:
+    """从最终答案中提取真实使用的笔记 ID。"""
+    seen: set[int] = set()
+    ids = []
+    for value in _CITATION_RE.findall(answer or ""):
+        note_id = int(value)
+        if note_id not in seen:
+            seen.add(note_id)
+            ids.append(note_id)
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # Tool 实现
 # ---------------------------------------------------------------------------
 def _tool_search_notes(query: str, top_k: int = 5) -> str:
-    """Tool: 用关键词重新检索笔记。返回 JSON 字符串。"""
+    """Tool: 用成长感知混合检索重新查笔记。"""
     try:
         client = _get_client()
         if client is None:
             return json.dumps({"error": "demo 模式，无法检索"}, ensure_ascii=False)
         vec = _embed_text(client, query)
-        hits = database.search_similar(vec, top_k=top_k)
+        hits = database.search_notes_hybrid(vec, query, top_k=top_k)
         if not hits:
             return json.dumps({"found": 0, "notes": []}, ensure_ascii=False)
         notes_out = []
@@ -429,13 +495,15 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         logger.warning("记忆检索失败: %s", e)
 
-    # 预检索笔记
-    hits = database.search_similar(q_vec, top_k=5)
+    # 预检索笔记：向量 + 关键词 + 成长价值加权
+    hits = database.search_notes_hybrid(q_vec, question, top_k=5)
     citations = _make_citations(hits)
+    card_hits = database.search_knowledge_cards_for_query(question, top_k=2)
+    relevant_cards = [hit["card"] for hit in card_hits]
     client = _get_client()
     is_demo = client is None
 
-    if not hits and not memories_used:
+    if not hits and not memories_used and not relevant_cards:
         answer = "当前知识库中未找到相关笔记。请先同步笔记到监听目录，待处理完成后再次提问。"
         qa_id = database.insert_qa(
             question=question, answer=answer, citations=[], session_id=session_id
@@ -460,7 +528,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         return {
             "answer": answer,
             "citations": citations,
-            "memories_used": memories_used,
+            "cards_used": relevant_cards,
             "qa_id": qa_id,
             "tools_used": [],
         }
@@ -476,6 +544,9 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         parts.append(memory_ctx)
     if history_ctx:
         parts.append(history_ctx)
+    cards_ctx = _build_cards_context(relevant_cards)
+    if cards_ctx:
+        parts.append(cards_ctx)
     parts.append(f"=== 笔记参考 ===\n{notes_ctx}")
     parts.append(f"用户问题：{question}")
     user_msg = "\n".join(parts)
@@ -533,6 +604,8 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                 except json.JSONDecodeError:
                     args = {}
                 result = _execute_tool_call(tool_name, args)
+                if tool_name == "search_notes":
+                    hits = _merge_tool_hits(hits, result)
                 tools_used.append({
                     "name": tool_name,
                     "arguments": args,
@@ -563,15 +636,15 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     qa_id = database.insert_qa(
         question=question, answer=answer, citations=citations, session_id=session_id
     )
-    cited_note_ids = [c.get("note_id") for c in citations if c.get("note_id")]
+    cited_note_ids = _cited_note_ids(answer)
     if cited_note_ids:
         try:
             database.mark_notes_used(cited_note_ids)
         except Exception as e:
-            logger.warning("累计笔记调用频次失败 qa_id=%s: %s", qa_id, e)
+            logger.warning("累计答案真实引用的笔记失败 qa_id=%s: %s", qa_id, e)
     database.insert_activity(
         event_type="model",
-        message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id}，引用 {len(citations)} 条笔记",
+        message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id}，真实引用 {len(cited_note_ids)} 条笔记，调用 {len(tools_used)} 次工具",
         model=cfg.QA_MODEL or cfg.LLM_MODEL,
     )
 
@@ -590,7 +663,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                     "key_conclusion": draft.get("key_conclusion", ""),
                     "application_scenario": draft.get("application_scenario", ""),
                     "agent_question": draft.get("agent_question", ""),
-                    "source_note_ids": source_note_ids,
+                    "source_note_ids": cited_note_ids or source_note_ids,
                     "qa_id": qa_id,
                     "session_id": session_id,
                 }
@@ -607,6 +680,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         "answer": answer,
         "citations": citations,
         "memories_used": memories_used,
+        "cards_used": relevant_cards,
         "qa_id": qa_id,
         "tools_used": tools_used,
         "card_draft": card_draft,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -1277,6 +1278,101 @@ def search_similar(query_vec: Sequence[float], top_k: int = 5) -> List[Dict[str,
     scored.sort(key=lambda x: x[0], reverse=True)
     top = scored[: int(top_k)]
     return [{"score": s, "note": n} for s, n in top]
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
+
+
+def _text_tokens(text: str) -> set[str]:
+    """构造轻量检索词：英文单词 + 中文相邻二字组。"""
+    text = text or ""
+    tokens = {token.lower() for token in _WORD_RE.findall(text)}
+    for segment in _CJK_RE.findall(text):
+        if len(segment) == 1:
+            tokens.add(segment)
+        else:
+            tokens.update(segment[i : i + 2] for i in range(len(segment) - 1))
+    return tokens
+
+
+def _validated_card_note_ids() -> set[int]:
+    """返回已被用户复验为正确的卡片所引用的笔记。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT cl.target_id AS note_id
+            FROM card_links AS cl
+            JOIN knowledge_cards AS kc ON kc.id = cl.source_id
+            WHERE cl.source_type = 'card' AND cl.target_type = 'note'
+              AND kc.verdict = 'correct';
+            """
+        ).fetchall()
+    return {int(row["note_id"]) for row in rows}
+
+
+def search_notes_hybrid(
+    query_vec: Sequence[float], query_text: str, top_k: int = 5
+) -> List[Dict[str, Any]]:
+    """成长感知混合检索。
+
+    语义相似度负责主排序；关键词负责精确兜底；分诊出的实操经验、
+    使用频次和已验证卡片链接提供小幅价值加权，避免收藏型资料淹没活知识。
+    """
+    notes = get_done_notes_with_embeddings()
+    query_tokens = _text_tokens(query_text)
+    validated_notes = _validated_card_note_ids()
+    scored: List[Tuple[float, float, Dict[str, Any]]] = []
+    for note in notes:
+        semantic = cosine_similarity(query_vec, note.get("embedding") or [])
+        haystack = " ".join(
+            str(note.get(field) or "")
+            for field in ("title", "summary", "ocr_text", "condition_text",
+                          "action_text", "consequence_text", "evidence_text",
+                          "next_action_text")
+        )
+        note_tokens = _text_tokens(haystack)
+        keyword = (
+            len(query_tokens & note_tokens) / len(query_tokens) if query_tokens else 0.0
+        )
+        boost = 0.0
+        if note.get("knowledge_kind") == "practice":
+            boost += 0.05
+        if note.get("knowledge_kind") == "reference":
+            boost -= 0.03
+        if int(note.get("id") or 0) in validated_notes:
+            boost += 0.08
+        boost += min(float(note.get("use_count") or 0), 8.0) * 0.004
+        score = semantic * 0.70 + keyword * 0.25 + boost
+        scored.append((score, keyword, note))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [
+        {"score": round(score, 4), "keyword_score": round(keyword, 4), "note": note}
+        for score, keyword, note in scored[: max(1, min(int(top_k), 50))]
+    ]
+
+
+def search_knowledge_cards_for_query(query_text: str, top_k: int = 2) -> List[Dict[str, Any]]:
+    """按关键词检索已沉淀的知识卡片，供问答时复用结论。"""
+    cards = list_knowledge_cards(limit=100)["items"]
+    query_tokens = _text_tokens(query_text)
+    if not query_tokens:
+        return []
+    scored = []
+    for card in cards:
+        haystack = " ".join(
+            str(card.get(field) or "")
+            for field in ("title", "core_summary", "key_conclusion",
+                          "application_scenario", "ai_supplement")
+        )
+        overlap = len(query_tokens & _text_tokens(haystack)) / len(query_tokens)
+        verdict_boost = 0.08 if card.get("verdict") == "correct" else 0.0
+        mastery_boost = 0.04 if card.get("mastery_level") == "validated" else 0.0
+        score = overlap * 0.90 + verdict_boost + mastery_boost
+        if score >= 0.12:
+            scored.append((score, card))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [{"score": round(score, 4), "card": card} for score, card in scored[:top_k]]
 
 
 # ---------------------------------------------------------------------------
