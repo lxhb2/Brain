@@ -410,6 +410,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass ^
 
 ### 上传的笔记看不到
 
+如果打开 Brain 后笔记像被清空了，先不要重建数据。最常见原因是 Docker Desktop/WSL 重启后绑定挂载偶发脱离：真实文件仍在 WSL 数据目录中，但容器暂时看到了空目录。
+
+Windows 登录启动脚本现在会自动写入探针文件并从 `brain-backend` 容器读取；发现不一致时自动执行修复命令。也可以手动运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass ^
+  -File 'F:\桌面\Brain\scripts\ensure-brain-mount.ps1'
+```
+
+修复逻辑会重建 `backend`、`cloud` 和 `syncthing` 容器，然后等待 `/api/health` 恢复。它不会删除、移动或覆盖 `/home/lxhb/.local/var/brain` 里的数据。
+
 检查 `.env` 是否仍然是：
 
 ```env

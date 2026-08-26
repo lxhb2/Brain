@@ -1,5 +1,12 @@
 $ErrorActionPreference = "Continue"
 
+# Docker Desktop/WSL restarts can occasionally detach bind mounts. Repair that
+# before models are loaded so existing notes and cloud files remain visible.
+$ensureMount = Join-Path $PSScriptRoot "ensure-brain-mount.ps1"
+if (Test-Path -LiteralPath $ensureMount) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $ensureMount
+}
+
 $lms = Join-Path $env:USERPROFILE ".lmstudio\bin\lms.exe"
 if (-not (Test-Path -LiteralPath $lms)) {
     Write-Warning "LM Studio CLI not found: $lms"
