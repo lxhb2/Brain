@@ -1,368 +1,231 @@
-# Brain · 个人手写笔记知识图谱
+# Brain - 个人知识库与成长系统
 
-== 本项目由AI编程实现 ==
+> 本项目由 AI 编程实现。
 
-把多设备的手写笔记（GoodNotes / Notability / OneNote / 手拍白板…）自动变成一个可检索、可关联、可问答的「知识星座」。
+Brain 不只是一个笔记存储工具，而是一个帮助你把信息转化为实操经验、持续进化的「第二大脑」。
 
-- **自动入库**：watchdog 实时监听同步文件夹 + 每日凌晨全量兜底扫描
-- **OCR + 结构化**：视觉模型抽取标题 / 摘要 / 关键词 / OCR 文本 + embedding
-- **知识图谱**：候选链接 = α·语义相似 + β·关键词重合 + γ·时间衰减，React Flow 可视化
-- **RAG 问答**：向量检索 Top-K → LLM 生成 → 附引用笔记，支持 👍/👎 反馈自学习
-- **极轻量**：后台常驻 ~100MB；原始文件不进库，SQLite 单文件 ~60MB / 千张
-- **Demo 模式**：不配 OpenAI Key 也能端到端跑通（模拟 OCR / 问答 / 图谱）
+核心理念：**知识库的价值 = 知识密度 x 调用频次 x 验证深度**。只存真正做过、验证过的活知识，外部资料放仓库区，噪音自动过滤。
+
+---
+
+## 核心功能
+
+### 自动入库与 OCR
+
+- watchdog 实时监听多设备同步文件夹，每日凌晨全量兜底扫描
+- 支持 PDF / 图片 / TXT / Markdown / DOCX
+- 本地或云端 OCR 抽取文本，LLM 结构化生成标题、摘要、关键词和向量
+- 生成缩略图，原图保留在数据目录
+
+### 成长闭环（Growth）
+
+访问 `http://127.0.0.1:8080/growth`
+
+| 环节 | 说明 |
+|------|------|
+| 入库分诊 | LLM 自动判断每条笔记是 `practice`（实操经验）/ `reference`（外部资料）/ `noise`（噪音），并提取条件、动作、结果、证据、下一步 |
+| 调用统计 | 问答答案中真实引用的笔记才累计使用次数 |
+| 知识卡片 | 每次问答可沉淀为结构化卡片，含核心结论、落地场景和检验问题 |
+| 间隔复验 | 卡片根据回答质量进入复验队列，答对延长间隔，答错缩短间隔并进入错题本 |
+| 每日审核 | 每天 23:05 AI 审计当日记录：哪些值得保留、哪些理解有偏差、明天做什么调整 |
+
+### 成长感知混合检索
+
+问答检索不是单纯的向量相似度，排序公式：
+
+```
+score = 0.70 * cosine_similarity(query, note)
+      + 0.25 * keyword_overlap(query, note_all_fields)
+      + growth_boost
+```
+
+其中 `growth_boost` 包括：
+
+- `practice` 笔记 +0.05
+- 已被正确复验卡片引用的笔记 +0.08
+- 高频使用笔记最高 +0.032（use_count 封顶 8 次）
+- `reference` 笔记 -0.03（避免收藏型资料淹没活知识）
+
+已沉淀的知识卡片也会回流到 Agent 上下文，让结论可以被复用。
+
+### RAG 问答 + Agent 工具
+
+访问 `http://127.0.0.1:8080/qa`
+
+- 初始检索：成长感知混合排序 Top-5 笔记 + 相关知识卡片 + 用户长期记忆
+- Agent 可主动调用工具补检：`search_notes` / `search_memory` / `add_memory`
+- 单轮最多 3 次工具调用，防止死循环
+- 答案强制附带 `[note_id]` 引用，只有真实出现的引用才计入调用频次
+- 多轮对话支持最近 5 轮历史上下文
+
+### 知识图谱
+
+访问 `http://127.0.0.1:8080/graph`
+
+候选链接权重 = `0.6*语义相似 + 0.3*关键词重合 + 0.1*时间衰减`，React Flow 可视化展示。
+
+### 私有云盘（SFTPGo）
+
+访问 `http://brain.local:8090/web/client`
+
+- 从 Brain 主界面（8080 端口）上传的文档会自动落入 `/app/data/cloud/` 并被 watcher 扫描入库
+- 云盘文件同时保存在本地磁盘上，不会因物理机 IP 变化而消失
+- 支持手机端直接上传到云盘目录，后端自动识别来源为 `cloud-sftpgo`
+
+### 活动日志
+
+访问 `http://127.0.0.1:8080/logs`
+
+自动记录什么模型在什么时候完成了什么任务、哪个设备上传了哪个文件、何时执行了备份。
+
+### 固定访问地址
+
+通过 mDNS 注册 `brain.local`，局域网内手机和电脑无需查询 IP：
+
+```
+http://brain.local:8080    # Brain 主界面
+http://brain.local:8000    # 后端 API
+http://brain.local:8090    # SFTPGo 云盘
+http://brain.local:8384    # Syncthing
+```
+
+如果 `brain.local` 无法解析（部分 Android 设备不支持 mDNS），仍可通过 Windows 物理机 IP + 8080 访问。脚本 `scripts/register-brain-mdns.ps1` 可注册开机自启动的 mDNS 广播。
+
+---
+
+## 本地模型（LM Studio）
+
+Brain 默认连接本机 LM Studio 提供的 OpenAI 兼容 API：
+
+| 用途 | 模型 | 说明 |
+|------|------|------|
+| OCR 结构化 / RAG 问答 / 分诊 / 审核 | `qwen3.5-4b` | Qwen3.5 4B，API ID 使用短横线 |
+| 向量嵌入 | `text-embedding-nomic-embed-text-v1.5` | 输出 768 维向量 |
+
+`.env` 关键配置：
+
+```env
+OPENAI_API_KEY=lm-studio
+OPENAI_BASE_URL=http://host.docker.internal:1234/v1
+LLM_MODEL=qwen3.5-4b
+QA_MODEL=qwen3.5-4b
+EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5
+EMBEDDING_DIM=768
+BRAIN_DATA_DIR=/home/lxhb/.local/var/brain
+```
+
+WSL 容器无法访问 `127.0.0.1:1234`，必须用 `host.docker.internal`。
+
+Windows 启动脚本 `scripts/start-brain-lmstudio.ps1` 会确认 LM Studio 服务已启动并按需加载两个模型，已注册到用户登录自启动。
 
 ---
 
 ## 架构
 
 ```
-各设备笔记 App ──自动导出──▶ Syncthing ──▶ 中转机 synced_notes/
-                                                │
-                                ┌───────────────┴───────────────┐
-                                ▼                               ▼
-                          watchdog 实时监听            每日 03:00 全量扫描
-                                │                               │
-                                └──────────┬────────────────────┘
-                                           ▼
-                              OCR Pipeline (GPT-4o) + Embedding
-                                           │
-                            ┌──────────────┼──────────────┐
-                            ▼              ▼              ▼
-                         SQLite        缩略图         候选链接
-                            │
-                      FastAPI (端口 8000) ─── 任意设备浏览器访问
-                      ├ /graph   知识图谱 (React Flow)
-                      ├ /qa      RAG 智能问答
-                      └ /notes   笔记浏览 (原图 + OCR 对照)
+iPad (GoodNotes) --Syncthing--> \
+Android (笔记)   --Syncthing-->  \
+PC (OneNote)     --Syncthing-->   >--> data/synced_notes/<device-app>/
+手拍照片          --Syncthing--> /
+SFTPGo 云盘上传   -------------> data/cloud/
+                                        |
+                        watchdog 实时监听 + 每日 03:00 全量扫描
+                                        |
+                              OCR Pipeline + Embedding
+                                        |
+                    SQLite + 缩略图 + 候选链接 + 入库分诊
+                                        |
+                    FastAPI (8000) <-- nginx (8080) <-- 浏览器/PWA
+                    |       |       |       |
+                 /graph   /qa   /notes   /growth
+                知识图谱  问答   笔记浏览  成长面板
 ```
 
 ## 项目结构
 
 ```
 .
-├── backend/                # Python FastAPI 后端
-│   ├── main.py             # 入口 + 静态托管 + lifespan 启动后台服务
+├── backend/
+│   ├── main.py             # FastAPI 入口 + lifespan 启动后台服务
 │   ├── config.py           # pydantic-settings 配置
-│   ├── database.py         # SQLite + 内存向量检索
+│   ├── database.py         # SQLite + 混合检索 + 向量相似度
 │   ├── watcher.py          # watchdog 文件监听
 │   ├── ocr_processor.py    # OCR + 结构化 + embedding
-│   ├── qa_engine.py        # RAG 问答
+│   ├── qa_engine.py        # RAG 问答 + Agent 工具调用
 │   ├── graph_api.py        # 图谱构建与查询
-│   ├── feedback.py         # 👍/👎 反馈
-│   ├── scheduler.py        # APScheduler 定时扫描 + 处理队列
-│   ├── routes/             # API 路由分组
-│   └── requirements.txt
-├── frontend/               # React + Vite + React Flow
-│   ├── src/
-│   │   ├── pages/          # Graph / QA / Notes / NoteDetail
-│   │   ├── components/     # Layout / NoteNode / GraphFilters / ...
-│   │   ├── api/            # 后端 API 封装
-│   │   └── lib/            # 力导向布局等工具
-│   └── nginx.conf
+│   ├── feedback.py         # 反馈处理
+│   ├── growth.py           # 入库分诊 + 每日成长审核
+│   ├── scheduler.py        # APScheduler 定时任务
+│   ├── settings_store.py   # 运行时监听目录持久化
+│   └── routes/             # API 路由分组
+├── frontend/src/
+│   ├── pages/              # Graph / QA / Notes / Growth / Logs / Settings ...
+│   ├── components/         # Layout / NoteNode / GraphFilters ...
+│   └── api/client.ts       # 后端 API 封装
+├── scripts/                # 部署、备份、mDNS、端口转发等脚本
+├── docs/OPERATIONS.md      # 详细运维手册
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
-├── docker-compose.yml
-└── .env.example
+└── docker-compose.yml
 ```
 
 ---
 
 ## 快速开始
 
-### 方式一：Docker Compose（推荐）
+### Docker Compose（推荐）
 
 ```bash
-# 1. 复制环境配置（可选：填入 OPENAI_API_KEY 启用真实 OCR）
 cp .env.example .env
-
-# 2. 一键启动
+# 编辑 .env 填入模型配置
 docker compose up -d --build
-
-# 3. 浏览器访问
-open http://localhost:8080
 ```
 
-后端 API 在 `http://localhost:8000`，前端在 `http://localhost:8080`。
+前端 `http://localhost:8080`，后端 `http://localhost:8000`。
 
-### 方式二：本地开发（前后端分离热更新）
+### 本地开发
 
 ```bash
 # 后端
 cd backend
 pip install -r requirements.txt
-python main.py            # 监听 0.0.0.0:8000
+python main.py
 
 # 前端（另开终端）
 cd frontend
-npm install
-npm run dev               # 监听 5173，自动代理 /api → :8000
+npm install && npm run dev
 ```
 
 浏览器访问 `http://localhost:5173`。
 
 ---
 
-## 服务器部署
+## 定时任务
 
-Brain 支持三种部署场景，按你的需求选一种即可。
+所有任务使用 Asia/Shanghai 时区：
 
-### 场景一：本地 PC / WSL（局域网访问）
-
-适合：只想在家里用，手机和 PC 在同一 WiFi。
-
-```bash
-# WSL 或 Linux PC 上一键启动
-./scripts/deploy.sh
-```
-
-脚本会自动：
-- 检查并提示安装 Docker
-- 创建 `.env` 配置文件
-- 初始化数据目录
-- 启动前后端容器
-
-启动后用 `http://你PC的局域网IP:8080` 访问。
-
-**WSL 用户额外步骤**（让局域网设备能访问 WSL 内的服务）：
-
-WSL2 默认是 NAT 网络，`hostname -I` 得到的地址会在 Windows/WSL 重启后变化。
-不要把某个固定 WSL IP 写死到 `netsh interface portproxy` 里。在 Windows
-PowerShell（管理员）执行一次：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\fix-wsl-portproxy.ps1 -RegisterTask
-```
-
-这个脚本会等待 WSL 启动完成，读取当前 WSL IPv4，刷新 `8080 -> 8080`
-与 `8000 -> 8000` 的 portproxy 规则，并创建防火墙规则。它还会注册一个
-登录时运行的任务；之后物理机 IP 变化、WSL IP 变化或重启后，只需要用
-新的物理机 IP 访问，不需要再迁移或重建数据。
-
-如果你的发行版支持镜像网络（Windows 11 / WSL 2.0+），也可以在
-`C:\Users\<用户>\.wslconfig` 中启用：
-
-```ini
-[wsl2]
-networkingMode=mirrored
-```
-
-随后在 PowerShell 执行 `wsl --shutdown` 并重新启动 WSL。镜像模式下
-Linux 监听的 8080 会像 Windows 本机端口一样暴露，通常不再需要 portproxy；
-但部分 VPN/防火墙组合仍需单独验证。
-
-### 固定数据目录
-
-默认数据仍在项目下的 `data/`。如果项目目录可能移动、重新 clone 或被
-清理工具处理，建议把数据放到 Linux 文件系统里的固定路径。先停服务并
-复制旧数据：
-
-```bash
-./scripts/deploy.sh --stop
-sudo mkdir -p /var/lib/brain
-sudo rsync -aHAX data/ /var/lib/brain/
-echo 'BRAIN_DATA_DIR=/var/lib/brain' >> .env
-./scripts/deploy.sh --update
-```
-
-容器内路径仍然是 `/app/data`，数据库中的文件路径不会改变，因此历史
-上传的原图和缩略图会继续可见。注意：请放在 WSL 的 Linux 文件系统
-（如 `/var/lib/brain`），不要长期放在 `/mnt/c` 或 `/mnt/f` 这类
-Windows 挂载路径上；后者性能差，且跨系统权限行为更不稳定。
-
-**WSL 开机自启**（systemd 方式）：
-
-```powershell
-# 在 Windows PowerShell（管理员）里执行
-# 获取 WSL 的 IP
-$wslIP = wsl hostname -I
-# 把 Windows 的 8080 端口转发到 WSL
-netsh interface portproxy add v4tov4 listenport=8080 listenaddress=0.0.0.0 connectport=8080 connectaddress=$wslIP
-# 开放防火墙
-New-NetFirewallRule -DisplayName "Brain" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
-```
-
-**WSL 开机自启**（systemd 方式）：
-
-```bash
-# 在 WSL 里启用 systemd
-sudo tee -a /etc/wsl.conf <<EOF
-[boot]
-systemd=true
-EOF
-# 然后在 PowerShell 执行 wsl --shutdown 重启 WSL
-
-# 安装 brain 服务
-sudo cp scripts/brain.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now brain
-```
-
-> 本机当前部署使用 `/home/lxhb/.local/var/brain`，实际保存在
-> `G:\WSL\Ubuntu-22.04\ext4.vhdx`。私有云盘使用长期维护的 SFTPGo，
-> 局域网固定名是 `http://brain.local:8090/web/client`。完整运维说明见
-> [docs/OPERATIONS.md](docs/OPERATIONS.md)。
-
-### 场景二：云服务器 + HTTPS（生产部署）
-
-适合：要在外网访问、用域名、有 HTTPS（手机 PWA 必需）。
-
-**前提**：已有一台云服务器（推荐 Oracle Cloud Always Free 2C12G 或阿里云 99 元/年）+ 一个域名。
-
-```bash
-# 1. SSH 登录服务器，拉取代码
-git clone <你的仓库地址> /opt/brain
-cd /opt/brain
-
-# 2. 编辑 Caddyfile，把 brain.example.com 改成你的域名
-nano Caddyfile
-
-# 3. 编辑 .env，填入 OpenAI API Key
-cp .env.example .env
-nano .env
-
-# 4. 生产模式启动（自动 HTTPS）
-./scripts/deploy.sh --prod
-```
-
-脚本会用 `docker-compose.yml` + `docker-compose.prod.yml` 启动：
-- Caddy 自动申请 Let's Encrypt 证书并续期
-- 前端走 Caddy 443 端口
-- 后端仅在容器内网，不对外暴露
-
-**域名解析**：在域名服务商把 A 记录指向服务器公网 IP，等几分钟生效即可访问 `https://你的域名`。
-
-**服务器端口开放**：
-- 阿里云/腾讯云：控制台 → 安全组 → 开放 80 + 443
-- Oracle Cloud：Networking → Security Lists → 添加 80 + 443
-- 服务器防火墙：`sudo ufw allow 80,443/tcp`
-
-### 场景三：裸金属部署（不用 Docker）
-
-适合：服务器配置很低（1C1G），Docker 占资源太多。
-
-```bash
-# 1. 装依赖
-cd backend
-python3.12 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-# 2. 构建前端
-cd ../frontend
-pnpm install && pnpm run build
-
-# 3. 把前端构建产物软链到 backend 能找到的位置
-ln -s ../frontend/dist ../backend/../frontend/dist
-
-# 4. 配 .env
-cd ..
-cp .env.example .env
-nano .env
-
-# 5. 安装 systemd 服务
-sudo cp scripts/brain.service /etc/systemd/system/
-sudo nano /etc/systemd/system/brain.service  # 修改路径
-sudo systemctl daemon-reload
-sudo systemctl enable --now brain
-
-# 6. 验证
-curl http://localhost:8000/api/health
-```
-
-### 配置 Syncthing 笔记同步
-
-启动 Brain 时加 `--sync` 参数，会同时启动 Syncthing 容器：
-
-```bash
-./scripts/deploy.sh --sync
-```
-
-然后访问 `http://服务器IP:8384` 配置 Syncthing：
-1. 设置管理密码
-2. 添加设备（手机/平板上的 Syncthing）
-3. 共享 `synced_notes` 文件夹
-
-手机端装 Syncthing（Android）/ Möbius Sync（iOS），扫码连接即可。
-
-### 数据备份
-
-**手动备份**：
-
-```bash
-./scripts/backup.sh
-```
-
-**定时备份**（推荐）：
-
-```bash
-crontab -e
-# 每天凌晨 2 点备份，保留 14 天
-0 2 * * * /opt/brain/scripts/backup.sh >> /opt/brain/data/backups/cron.log 2>&1
-```
-
-备份文件位于 `data/backups/brain_YYYYMMDD_HHMMSS.db.gz`。
-
-### 运维命令速查
-
-| 操作 | 命令 |
+| 时间 | 任务 |
 |------|------|
-| 启动（开发） | `./scripts/deploy.sh` |
-| 启动（生产 HTTPS） | `./scripts/deploy.sh --prod` |
-| 启动 + Syncthing | `./scripts/deploy.sh --sync` |
-| 查看日志 | `./scripts/deploy.sh --logs` |
-| 停止 | `./scripts/deploy.sh --stop` |
-| 更新代码并重启 | `./scripts/deploy.sh --update` |
-| 备份数据库 | `./scripts/deploy.sh --backup` |
-| 容器状态 | `docker compose ps` |
-| 进入后端容器 | `docker compose exec backend bash` |
-| 查看 systemd 服务 | `systemctl status brain` |
-| systemd 日志 | `journalctl -u brain -f` |
+| 02:30 | 自动备份数据库（保留 14 天） |
+| 03:00 | 全量扫描监听目录 |
+| 03:30 | 记忆权重衰减 + 链接权重衰减 |
+| 23:00 | 每日笔记归纳 |
+| 23:05 | 成长维护：分诊积压笔记 + AI 每日审核 |
+| 每小时 :15 | 自动重试失败的 OCR（最多 3 次） |
+
+分诊每次最多处理 3 条，避免占满本地 Qwen 模型。
 
 ---
 
-## 配置说明
+## 数据安全
 
-复制 `.env.example` 为 `.env`，按需修改：
+当前数据目录 `/home/lxhb/.local/var/brain` 位于 WSL 的 ext4 虚拟磁盘内，实际占用 `G:\WSL\Ubuntu-22.04\ext4.vhdx`。物理机 IP 变化不影响文件和数据。
 
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `OPENAI_API_KEY` | （空） | 不填则进入 Demo 模式 |
-| `OPENAI_BASE_URL` | （空） | 兼容第三方 OpenAI 端点 |
-| `LLM_MODEL` | `gpt-4o` | 视觉 OCR / 对话模型 |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | 向量模型 |
-| `SYNCED_NOTES_ROOT` | `data/synced_notes` | 笔记同步根目录 |
-| `DB_PATH` | `data/brain.db` | SQLite 路径 |
-| `LINK_ALPHA` / `LINK_BETA` / `LINK_GAMMA` | 0.6 / 0.3 / 0.1 | 链接权重三分量 |
-| `LINK_WEIGHT_THRESHOLD` | 0.35 | 候选链接入图阈值 |
+- 数据库每日 02:30 自动备份到 `data/backups/`
+- 手动备份：`./scripts/backup.sh`
+- 不要把数据放在 `/mnt/c` 或 `/mnt/f` 等 Windows 挂载路径上（性能差且权限不稳定）
 
-### 监听目录（多设备）
-
-默认监听 `synced_notes/` 下的四个子目录，每个对应一种设备来源：
-
-```
-data/synced_notes/
-├── ipad-goodnotes/      # iPad GoodNotes 导出
-├── android-notes/       # 安卓笔记
-├── pc-onenote/          # 电脑 OneNote
-└── camera-shots/        # 手拍白板 / 照片
-```
-
-在 `backend/config.py` 的 `WATCH_DIRS` 中可增删目录与设备标签。
-
----
-
-## 多设备同步方案
-
-每台设备的笔记 App 设置「自动导出到同步文件夹」，再用 Syncthing 把这些文件夹同步到中转机的 `data/synced_notes/<对应子目录>`：
-
-```
-iPad (GoodNotes)  ──自动备份──▶ Syncthing ──┐
-Android (笔记)    ──自动同步──▶ Syncthing ──┤──▶ 中转机 synced_notes/
-PC (OneNote)      ──导出 PDF──▶ Syncthing ──┤
-手拍照片          ──自动下载──▶ Syncthing ──┘
-```
-
-文件一旦出现在监听目录，watchdog 立即触发处理：OCR → 入库 → 生成缩略图 → 计算候选链接 → 图谱更新。
+完整运维说明见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。
 
 ---
 
@@ -370,27 +233,14 @@ PC (OneNote)      ──导出 PDF──▶ Syncthing ──┤
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/notes` | 笔记列表（device/app/q/status/limit/offset） |
+| GET | `/api/health` | 健康检查 + 当前模型配置 |
+| GET | `/api/stats` | 统计（含成长指标） |
+| GET | `/api/notes` | 笔记列表 |
 | GET | `/api/notes/{id}` | 笔记详情 |
-| GET | `/api/notes/{id}/file` | 原始文件 |
-| GET | `/api/notes/{id}/thumbnail` | 缩略图 |
-| POST | `/api/notes/reprocess/{id}` | 重新 OCR |
-| GET | `/api/graph` | 图谱节点与边 |
-| GET | `/api/graph/neighbors/{id}` | 邻居节点 |
 | POST | `/api/qa/ask` | RAG 问答 |
-| GET | `/api/qa/history` | 问答历史 |
-| POST | `/api/feedback` | 👍/👎 反馈 |
-| GET | `/api/stats` | 统计 |
-| GET | `/api/health` | 健康检查 |
-
----
-
-## 候选链接权重
-
-```
-weight = 0.6·cosine_sim(emb_a, emb_b)
-       + 0.3·jaccard(keywords_a, keywords_b)
-       + 0.1·exp(-|Δt_天| / 30)
-```
-
-仅保留 `weight > 0.35` 的链接。反馈 👍 提升引用笔记间权重 +0.05，👎 降低 -0.10（clamp 到 [0,1]）。
+| GET | `/api/cards/due/review` | 到期复验卡片 |
+| POST | `/api/system/growth-triage?limit=3` | 手动触发入库分诊 |
+| POST | `/api/system/growth-review` | 手动触发每日审核 |
+| GET | `/api/system/growth-reviews` | 最近审核列表 |
+| GET | `/api/activity-logs` | 活动日志 |
+| GET | `/api/graph` | 图谱节点与边 |
