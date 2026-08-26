@@ -606,6 +606,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                 result = _execute_tool_call(tool_name, args)
                 if tool_name == "search_notes":
                     hits = _merge_tool_hits(hits, result)
+                    citations = _make_citations(hits)
                 tools_used.append({
                     "name": tool_name,
                     "arguments": args,
