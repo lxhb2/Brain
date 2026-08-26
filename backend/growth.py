@@ -13,6 +13,24 @@ from ocr_processor import _completion_text, _get_client, _strip_fences
 
 logger = logging.getLogger("brain.growth")
 _TZ_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_TRIAGE_JSON_SCHEMA = {
+    "name": "brain_note_triage",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "knowledge_kind": {"type": "string", "enum": ["practice", "reference", "noise"]},
+            "practice_status": {"type": "string", "enum": ["done", "attempted", "planned", "external", "unknown"]},
+            "context_condition": {"type": "string"},
+            "action": {"type": "string"},
+            "consequence": {"type": "string"},
+            "evidence": {"type": "string"},
+            "next_action": {"type": "string"},
+            "confidence": {"type": "number"},
+        },
+        "required": ["knowledge_kind", "confidence"],
+        "additionalProperties": False,
+    },
+}
 
 
 def _local_date(target_date: Optional[str] = None) -> str:
@@ -74,13 +92,16 @@ def triage_note(note: Dict[str, Any]) -> bool:
         resp = client.chat.completions.create(
             model=cfg.QA_MODEL or cfg.LLM_MODEL,
             messages=[{"role": "user", "content": _triage_prompt(_preview(note))}],
+            response_format={"type": "json_schema", "json_schema": _TRIAGE_JSON_SCHEMA},
             temperature=0.1,
-            max_tokens=900,
+            max_tokens=3000,
             timeout=120,
         )
-        data = _parse_json(_completion_text(resp.choices[0].message))
+        raw = _completion_text(resp.choices[0].message)
+        data = _parse_json(raw)
         kind = data.get("knowledge_kind")
         if kind not in ("practice", "reference", "noise"):
+            logger.warning("分诊笔记 %s 返回无效 JSON/分类: %s", note.get("id"), raw[:500])
             return False
         status = data.get("practice_status")
         if kind == "reference":
