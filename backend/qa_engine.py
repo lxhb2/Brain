@@ -44,7 +44,7 @@ _SYSTEM_PROMPT = (
     "限制：单次回答最多调用 3 次工具，避免无限循环。"
 )
 _CITATION_RE = re.compile(r"\[(\d+)\]")
-_CARD_CITATION_RE = re.compile(r"\[(?:卡片|card)\s*(\d+)\]")
+_CARD_CITATION_RE = re.compile(r"\[(?:卡片|card)\s*#?\s*(\d+)\]")
 
 # 多轮对话最多回溯几轮
 _MAX_HISTORY_TURNS = 5
