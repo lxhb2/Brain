@@ -447,6 +447,7 @@ export const api = {
   getNote: (id: number) => getJSON<Note>(`/api/notes/${id}`),
   noteFileUrl: (id: number) => `/api/notes/${id}/file`,
   noteThumbnailUrl: (id: number) => `/api/notes/${id}/thumbnail`,
+  noteBundleUrl: (id: number) => `/api/notes/${id}/bundle`,
   reprocessNote: (id: number) =>
     postJSON<{ note_id: number; status: string; queued: boolean }>(
       `/api/notes/reprocess/${id}`,

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Copy, Check, RefreshCw, Smartphone, AppWindow, Calendar, Pencil, Save, X, BadgeCheck, RotateCcw, Trash2, FileText, Download } from 'lucide-react'
+import { ArrowLeft, Archive, Copy, Check, RefreshCw, Smartphone, AppWindow, Calendar, Pencil, Save, X, BadgeCheck, RotateCcw, Trash2, FileText, Download } from 'lucide-react'
 import { api, type Note } from '@/api/client'
 import { StatusBadge, formatDate } from '@/components/StatusBadge'
 import { MarkdownView } from '@/components/MarkdownView'
@@ -267,6 +267,16 @@ export default function NoteDetail() {
             </>
           ) : (
             <>
+              {(note.file_path?.toLowerCase().endsWith('.md') || note.file_path?.toLowerCase().endsWith('.markdown')) && (
+                <a
+                  href={api.noteBundleUrl(note.id)}
+                  title="下载正文和内嵌图片的 Markdown 整合包"
+                  className="btn-ghost px-2 py-1.5 text-xs md:px-3 md:py-2"
+                >
+                  <Archive className="h-3.5 w-3.5" />
+                  <span className="hidden md:inline">整合包</span>
+                </a>
+              )}
               <button onClick={startEdit} className="btn-ghost px-2 py-1.5 text-xs md:px-3 md:py-2">
                 <Pencil className="h-3.5 w-3.5" />
                 <span className="hidden md:inline">编辑</span>

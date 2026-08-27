@@ -16,11 +16,14 @@ Brain 不只是一个笔记存储工具，而是一个帮助你把信息转化�
 - 支持 PDF / 图片 / TXT / Markdown / DOCX
 - 本地或云端 OCR 抽取文本，LLM 结构化生成标题、摘要、关键词和向量
 - Markdown 中本地引用的图片也会被 OCR，并合并到同一条笔记里
+- Markdown 详情页可下载「整合包」：正文、引用图片和 Mermaid 代码会打包成一个 ZIP
 - 生成缩略图，原图保留在数据目录
 
 ### Markdown 与 Mermaid 图
 
 笔记详情页使用 Markdown 渲染，支持 GFM 表格、代码块和内嵌图片。Markdown 引用的本地图片会通过受限预览接口读取，仅允许监听目录中的图片。OCR 识别到流程、箭头或分支关系时，会额外生成 `mermaid` 字段并渲染为关系图。你可以在详情页手动修正 OCR 文本和 Mermaid 代码，也能在保存前切换“编辑 / 预览”查看最终效果。
+
+「整合包」按钮会把这篇笔记导出为一个 ZIP。压缩包里的 `document.md` 已把引用改成本地 `assets/` 路径，`manifest.json` 记录原文件对应关系；解压后可整体移动到 Obsidian 或其他 Markdown 工具中。
 
 ### 成长闭环（Growth）
 

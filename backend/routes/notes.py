@@ -1,10 +1,16 @@
 """笔记相关 API 路由。"""
 from __future__ import annotations
 
+import datetime as _datetime
+import json
 import os
+import re
+import tempfile
+import uuid
+import zipfile
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -15,6 +21,106 @@ import settings_store
 from config import get_config
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
+_BUNDLE_HTML_IMG_RE = re.compile(r"(<img[^>]+src\s*=\s*[\"'])([^\"']+)([\"'][^>]*>)")
+
+
+def _bundle_base_name(note_id: int, title: Optional[str]) -> str:
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title or "").strip()
+    value = re.sub(r"\s+", "-", value)
+    return (value or f"note-{note_id}")[:80].strip(".-")
+
+
+@router.get("/{note_id}/bundle")
+def get_note_bundle(note_id: int, background_tasks: BackgroundTasks):
+    """Download a Markdown note and its referenced local images as one archive."""
+    note = database.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+
+    source_path = os.path.realpath(str(note.get("file_path") or ""))
+    ext = os.path.splitext(source_path)[1].lower()
+    if ext not in (".md", ".markdown"):
+        raise HTTPException(status_code=400, detail="只有 Markdown 笔记支持整合包导出")
+    if not os.path.isfile(source_path):
+        raise HTTPException(status_code=404, detail="原始 Markdown 文件不存在")
+
+    try:
+        markdown_text = ocr_processor._read_markdown_text(source_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取 Markdown 失败：{e}")
+
+    base_dir = os.path.dirname(source_path)
+    used_names: set[str] = set()
+    image_map: dict[str, str] = {}
+
+    for resolved in ocr_processor.extract_markdown_image_paths(source_path):
+        suffix = os.path.splitext(resolved)[1].lower()
+        stem = os.path.splitext(os.path.basename(resolved))[0]
+        candidate = f"{stem}{suffix}"
+        seq = 1
+        while candidate.lower() in used_names:
+            candidate = f"{stem}-{seq}{suffix}"
+            seq += 1
+        used_names.add(candidate.lower())
+        image_map[resolved] = f"assets/{candidate}"
+
+    def map_markdown_image(match: re.Match[str]) -> str:
+        alt, src = match.group(1), match.group(2)
+        resolved = os.path.normpath(os.path.join(base_dir, src))
+        bundled = image_map.get(resolved)
+        return f"![{alt}]({bundled})" if bundled else match.group(0)
+
+    def map_html_image(match: re.Match[str]) -> str:
+        before, src, after = match.groups()
+        resolved = os.path.normpath(os.path.join(base_dir, src))
+        bundled = image_map.get(resolved)
+        return f"{before}src=\"{bundled}\"{after}" if bundled else match.group(0)
+
+    portable_markdown = ocr_processor._MD_IMG_RE.sub(map_markdown_image, markdown_text)
+    portable_markdown = _BUNDLE_HTML_IMG_RE.sub(map_html_image, portable_markdown)
+    if note.get("mermaid") and str(note.get("mermaid")).strip():
+        portable_markdown += "\n\n## Mermaid 关系图\n\n```mermaid\n"
+        portable_markdown += str(note["mermaid"]).strip() + "\n```\n"
+
+    bundle_dir = os.path.join(tempfile.gettempdir(), "brain-bundles")
+    os.makedirs(bundle_dir, exist_ok=True)
+    archive_id = uuid.uuid4().hex
+    archive_path = os.path.join(bundle_dir, f"{archive_id}.zip")
+
+    try:
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            manifest = {
+                "format": "brain-markdown-bundle",
+                "version": 1,
+                "note_id": note_id,
+                "title": note.get("title"),
+                "created_at": note.get("created_at"),
+                "generated_at": _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
+                "entrypoint": "document.md",
+                "assets": [
+                    {"bundle_path": bundled, "source_path": source}
+                    for source, bundled in image_map.items()
+                ],
+            }
+            bundle.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            bundle.writestr("README.txt", "这是 Brain 导出的 Markdown 整合包。\n解压后直接打开 document.md 即可看到文字和图片。\n")
+            bundle.writestr("document.md", portable_markdown)
+            for resolved, bundled in image_map.items():
+                bundle.write(resolved, bundled)
+    except Exception as e:
+        try:
+            os.unlink(archive_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"生成整合包失败：{e}")
+
+    base_name = _bundle_base_name(note_id, note.get("title"))
+    background_tasks.add_task(os.unlink, archive_path)
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=f"{base_name}-markdown-bundle.zip",
+    )
 
 
 @router.get("")
