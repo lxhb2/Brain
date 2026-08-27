@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # —— 数据与缓存目录 ——
     SYNCED_NOTES_ROOT: str = "data/synced_notes"
     THUMBNAIL_DIR: str = "data/thumbnails"
+    MARKDOWN_BUNDLE_DIR: str = "data/markdown_bundles"
     DB_PATH: str = "data/brain.db"
 
     # —— OpenAI / LLM 配置 ——
@@ -75,6 +76,7 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         """创建运行所需的数据目录（如果缺失）。"""
         for d in (self.SYNCED_NOTES_ROOT, self.THUMBNAIL_DIR,
+                  self.MARKDOWN_BUNDLE_DIR,
                   os.path.dirname(self.DB_PATH) or "."):
             Path(d).mkdir(parents=True, exist_ok=True)
         # 同时确保每个监听目录存在，便于扫描与监听

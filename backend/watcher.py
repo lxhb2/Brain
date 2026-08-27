@@ -66,6 +66,9 @@ class NoteWatcher(FileSystemEventHandler):
         ):
             logger.info("图片已被 Markdown 引用，跳过独立入库: %s", src_path)
             return
+        if database.is_ignored_file(src_path):
+            logger.info("文件在忽略名单中，跳过独立入库: %s", src_path)
+            return
 
         # 去抖：同一文件短时间内只处理一次
         now = time.time()
@@ -79,6 +82,9 @@ class NoteWatcher(FileSystemEventHandler):
             file_hash = ocr_processor.compute_file_hash(src_path)
         except Exception as e:
             logger.warning("计算哈希失败 %s: %s", src_path, e)
+            return
+        if database.is_ignored_file(src_path, file_hash):
+            logger.info("文件哈希在忽略名单中，跳过独立入库: %s", src_path)
             return
 
         # 去重：路径或哈希已存在则跳过

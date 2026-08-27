@@ -16,14 +16,14 @@ Brain 不只是一个笔记存储工具，而是一个帮助你把信息转化�
 - 支持 PDF / 图片 / TXT / Markdown / DOCX
 - 本地或云端 OCR 抽取文本，LLM 结构化生成标题、摘要、关键词和向量
 - Markdown 中本地引用的图片也会被 OCR，并合并到同一条笔记里
-- Markdown 详情页可下载「整合包」：正文、引用图片和 Mermaid 代码会打包成一个 ZIP
+- Markdown 处理完成后会自动生成持久化整合包：`document.md`、`assets/` 图片和单文件 ZIP 同时保存在 `/app/data/markdown_bundles/`
 - 生成缩略图，原图保留在数据目录
 
 ### Markdown 与 Mermaid 图
 
 笔记详情页使用 Markdown 渲染，支持 GFM 表格、代码块和内嵌图片。Markdown 引用的本地图片会通过受限预览接口读取，仅允许监听目录中的图片。OCR 识别到流程、箭头或分支关系时，会额外生成 `mermaid` 字段并渲染为关系图。你可以在详情页手动修正 OCR 文本和 Mermaid 代码，也能在保存前切换“编辑 / 预览”查看最终效果。
 
-「整合包」按钮会把这篇笔记导出为一个 ZIP。压缩包里的 `document.md` 已把引用改成本地 `assets/` 路径，`manifest.json` 记录原文件对应关系；解压后可整体移动到 Obsidian 或其他 Markdown 工具中。
+Markdown 整合包会持久化到 `/app/data/markdown_bundles/<note_id>/`。这里同时保留 `document.md + assets/` 的可读目录和 `*-markdown-bundle.zip` 单文件；ZIP 内的 `document.md` 已把引用改成本地 `assets/` 路径，`manifest.json` 记录原文件对应关系。Mermaid 代码会追加到文档末尾，解压后可整体移动到 Obsidian 或其他 Markdown 工具中。旧笔记可用 `/api/system/backfill-markdown-bundles?limit=100` 补跑。
 
 ### 成长闭环（Growth）
 
@@ -87,6 +87,21 @@ score = 0.70 * cosine_similarity(query, note)
 访问 `http://127.0.0.1:8080/logs`
 
 自动记录什么模型在什么时候完成了什么任务、哪个设备上传了哪个文件、何时执行了备份。
+
+### 扫描忽略名单
+
+如果某个源文件只是历史草稿、重复截图或不需要入库的附件，可以加入忽略名单。扫描器和 watcher 会按完整路径及文件哈希跳过它，避免手动删除记录后又被每日全量扫描“复活”：
+
+```http
+POST /api/system/ignored-files
+Content-Type: application/json
+
+{
+  "file_path": "/mnt/d/path/to/file.jpg",
+  "file_hash": "optional-sha256",
+  "reason": "historical duplicate"
+}
+```
 
 ### 固定访问地址
 
@@ -161,6 +176,7 @@ SFTPGo 云盘上传   -------------> data/cloud/
 │   ├── database.py         # SQLite + 混合检索 + 向量相似度
 │   ├── watcher.py          # watchdog 文件监听
 │   ├── ocr_processor.py    # OCR + 结构化 + embedding
+│   ├── bundle_builder.py   # Markdown 文字 + 图片整合包
 │   ├── qa_engine.py        # RAG 问答 + Agent 工具调用
 │   ├── graph_api.py        # 图谱构建与查询
 │   ├── feedback.py         # 反馈处理
@@ -257,5 +273,9 @@ npm install && npm run dev
 | POST | `/api/system/growth-triage?limit=3` | 手动触发入库分诊 |
 | POST | `/api/system/growth-review` | 手动触发每日审核 |
 | GET | `/api/system/growth-reviews` | 最近审核列表 |
+| GET | `/api/notes/{id}/bundle` | 下载 Markdown 整合包 |
+| GET | `/api/system/ignored-files` | 查看扫描忽略名单 |
+| POST | `/api/system/ignored-files` | 增加扫描忽略规则 |
+| POST | `/api/system/backfill-markdown-bundles?limit=100` | 补跑已有 Markdown 整合包 |
 | GET | `/api/activity-logs` | 活动日志 |
 | GET | `/api/graph` | 图谱节点与边 |

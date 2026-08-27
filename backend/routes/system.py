@@ -19,6 +19,7 @@ import database
 import graph_api
 import growth
 import scheduler
+import bundle_builder
 import settings_store
 from config import get_config, get_watch_dirs_runtime
 
@@ -216,6 +217,60 @@ def trigger_scan() -> Dict[str, Any]:
     """手动触发一次全量扫描（立即执行，不等 03:00）。"""
     new_count = scheduler.full_scan()
     return {"scanned": True, "new_notes": new_count}
+
+
+class IgnoredFileRequest(BaseModel):
+    file_path: str = Query(min_length=1)
+    file_hash: str | None = None
+    reason: str = "manual"
+
+
+@router.get("/system/ignored-files")
+def list_ignored_files(limit: int = 100) -> Dict[str, Any]:
+    """List files excluded from future scanner ingestion."""
+    return {"items": database.list_ignored_files(limit=max(1, min(int(limit), 500)))}
+
+
+@router.post("/system/ignored-files")
+def add_ignored_file(body: IgnoredFileRequest) -> Dict[str, Any]:
+    """Exclude a historical or duplicate source file from automatic ingestion."""
+    item = database.add_ignored_file(
+        file_path=body.file_path,
+        file_hash=body.file_hash,
+        reason=body.reason,
+    )
+    database.insert_activity(
+        event_type="upload",
+        message=f"扫描忽略规则已添加：{item['file_path']}",
+    )
+    return {"added": True, "item": item}
+
+
+@router.post("/system/backfill-markdown-bundles")
+def backfill_markdown_bundles(limit: int = 100) -> Dict[str, Any]:
+    """Build persistent bundles for Markdown notes processed before this feature."""
+    safe_limit = max(1, min(int(limit), 500))
+    with database._db_lock, database.get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, title FROM notes
+            WHERE status = 'done'
+              AND (LOWER(file_path) LIKE '%.md' OR LOWER(file_path) LIKE '%.markdown')
+            ORDER BY id DESC LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+
+    results: list[Dict[str, Any]] = []
+    succeeded = 0
+    for row in rows:
+        try:
+            info = bundle_builder.build_markdown_bundle(int(row["id"]))
+            results.append({"note_id": int(row["id"]), "archive": info["archive"], "ok": True})
+            succeeded += 1
+        except Exception as exc:
+            results.append({"note_id": int(row["id"]), "error": str(exc), "ok": False})
+    return {"rebuilt": True, "total": len(results), "succeeded": succeeded, "results": results}
 
 
 class RebuildLinksRequest(BaseModel):

@@ -155,10 +155,16 @@ def full_scan() -> int:
                 fpath = os.path.join(root, fname)
                 if ext in ocr_processor.IMAGE_EXTS and os.path.abspath(fpath) in referenced_images:
                     continue
+                if database.is_ignored_file(fpath):
+                    logger.info("文件在忽略名单中，跳过入库: %s", fpath)
+                    continue
                 try:
                     file_hash = ocr_processor.compute_file_hash(fpath)
                 except Exception as e:
                     logger.warning("计算哈希失败 %s: %s", fpath, e)
+                    continue
+                if database.is_ignored_file(fpath, file_hash):
+                    logger.info("文件哈希在忽略名单中，跳过入库: %s", fpath)
                     continue
                 # 已存在（按 path 或 hash）则跳过
                 existing = database.get_note_by_path(fpath)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -151,6 +152,19 @@ def init_db() -> None:
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_logs(created_at DESC);")
         c.execute("CREATE INDEX IF NOT EXISTS idx_activity_event ON activity_logs(event_type, created_at DESC);")
+
+        # —— 扫描忽略名单：记录用户明确不想重复入库的历史文件 ——
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ignored_files (
+                file_path TEXT PRIMARY KEY,
+                file_hash TEXT,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_ignored_hash ON ignored_files(file_hash);")
 
         # —— 兼容性迁移：给 notes 表添加 ocr_model 字段（记录用了哪个模型 OCR）——
         # 旧库不存在该列时通过 ALTER TABLE 添加；新库在 CREATE TABLE 已包含则跳过
@@ -526,6 +540,65 @@ def insert_note(
             cur.execute("SELECT id FROM notes WHERE file_path = ?;", (file_path,))
             row = cur.fetchone()
             return int(row["id"]) if row else None
+
+
+def normalize_ignored_path(path: str) -> str:
+    """Convert a user-provided file path to the scanner's canonical form."""
+    return os.path.normpath(os.path.abspath(str(path or "").strip()))
+
+
+def add_ignored_file(
+    *,
+    file_path: str,
+    file_hash: Optional[str] = None,
+    reason: str = "manual",
+) -> Dict[str, Any]:
+    """Remember a scanner-visible file that should never be ingested again."""
+    normalized = normalize_ignored_path(file_path)
+    if not normalized or normalized == os.path.abspath(os.sep):
+        raise ValueError("invalid file path")
+    with _db_lock, get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ignored_files(file_path, file_hash, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(file_path) DO UPDATE SET
+                file_hash = COALESCE(excluded.file_hash, file_hash),
+                reason = excluded.reason;
+            """,
+            (normalized, file_hash, reason[:200], _now()),
+        )
+        row = conn.execute(
+            "SELECT * FROM ignored_files WHERE file_path = ?", (normalized,)
+        ).fetchone()
+        return dict(row)
+
+
+def remove_ignored_file(path: str) -> bool:
+    with _db_lock, get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM ignored_files WHERE file_path = ?",
+            (normalize_ignored_path(path),),
+        )
+        return cur.rowcount > 0
+
+
+def list_ignored_files(limit: int = 500) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit), 1000))
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ignored_files ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def is_ignored_file(path: str, file_hash: Optional[str] = None) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM ignored_files WHERE file_path = ? OR (? IS NOT NULL AND file_hash = ?) LIMIT 1;",
+            (normalize_ignored_path(path), file_hash, file_hash),
+        ).fetchone()
+        return row is not None
 
 
 def update_note_status(note_id: int, status: str) -> None:

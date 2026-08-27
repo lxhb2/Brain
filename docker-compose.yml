@@ -33,6 +33,7 @@ services:
       # 容器内路径
       - SYNCED_NOTES_ROOT=/app/data/synced_notes
       - THUMBNAIL_DIR=/app/data/thumbnails
+      - MARKDOWN_BUNDLE_DIR=/app/data/markdown_bundles
       - DB_PATH=/app/data/brain.db
       # 轻量化运行参数：单进程、限制并发和渲染倍率，避免 OCR/PDF 峰值放大内存
       - UVICORN_WORKERS=1

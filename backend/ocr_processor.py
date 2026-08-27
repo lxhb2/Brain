@@ -30,6 +30,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 import database
+import bundle_builder
 import graph_api
 import settings_store
 from config import get_config
@@ -1169,6 +1170,31 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
 
         # 重算候选链接（异步，不阻塞 worker 处理下一条笔记）
         _submit_link_recompute(note_id)
+
+        if ext in (".md", ".markdown"):
+            try:
+                bundle_info = bundle_builder.build_markdown_bundle(note_id)
+                database.insert_activity(
+                    event_type="backup",
+                    message=(
+                        f"Markdown 整合包已自动保存：{bundle_info['archive']}"
+                        f"（包含 {bundle_info['image_count']} 张图片）"
+                    ),
+                    device=note.get("source_device"),
+                    app=note.get("source_app"),
+                    note_id=note_id,
+                    file_name=os.path.basename(bundle_info["archive"]),
+                )
+            except Exception as bundle_error:
+                logger.warning("笔记 %s Markdown 整合包自动生成失败: %s", note_id, bundle_error)
+                database.insert_activity(
+                    event_type="error",
+                    message=f"Markdown 整合包生成失败：{bundle_error}",
+                    device=note.get("source_device"),
+                    app=note.get("source_app"),
+                    note_id=note_id,
+                    file_name=os.path.basename(file_path),
+                )
 
         logger.info("笔记 %s 处理完成 (demo=%s, model=%s)", note_id, is_demo, used_model_id)
         return True
