@@ -144,6 +144,7 @@ def full_scan() -> int:
     for watch_path, meta in get_watch_dirs_runtime().items():
         if not os.path.isdir(watch_path):
             continue
+        referenced_images = ocr_processor.markdown_referenced_images(watch_path)
         for root, _dirs, files in os.walk(watch_path):
             for fname in files:
                 if _is_temp_or_hidden(fname):
@@ -152,6 +153,8 @@ def full_scan() -> int:
                 if ext not in SUPPORTED_EXTS:
                     continue
                 fpath = os.path.join(root, fname)
+                if ext in ocr_processor.IMAGE_EXTS and os.path.abspath(fpath) in referenced_images:
+                    continue
                 try:
                     file_hash = ocr_processor.compute_file_hash(fpath)
                 except Exception as e:

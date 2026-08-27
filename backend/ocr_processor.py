@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import random
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
@@ -38,6 +39,10 @@ logger = logging.getLogger("brain.ocr")
 SUPPORTED_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".txt", ".md", ".markdown", ".docx")
 # 文本型扩展名（不经过 OCR vision，直接抽文本 → LLM 结构化）
 TEXT_EXTS = (".txt", ".md", ".markdown", ".docx")
+IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+_MD_IMG_RE = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)\s*\)")
+_HTML_IMG_RE = re.compile(r"<img[^>]+src\s*=\s*[\"']([^\"']+)[\"'][^>]*>")
+_MAX_MD_IMAGES = 16
 
 # 链接重算专用线程池：把 O(N) 的图谱重算从 OCR worker 挪到独立线程，
 # 避免阻塞 worker 处理下一条笔记。database._db_lock 保证写链接表的线程安全。
@@ -146,6 +151,107 @@ def extract_text_from_file(path: str) -> str:
                     parts.append(row_text)
         return "\n".join(parts)
     raise ValueError(f"不支持的文本型文件: {ext}")
+
+
+def _read_markdown_text(path: str) -> str:
+    """读取 .md 文件（兼容 UTF-8 / GBK）。"""
+    for enc in ("utf-8", "utf-8-sig", "gbk", "latin-1"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return f.read()
+        except UnicodeDecodeError:
+            continue
+    raise RuntimeError("无法解码 Markdown 文件")
+
+
+def extract_markdown_image_paths(md_path: str) -> List[str]:
+    """提取 Markdown 中引用的本地图片路径，返回去重后的绝对路径。"""
+    ext = os.path.splitext(md_path)[1].lower()
+    if ext not in (".md", ".markdown"):
+        return []
+    raw = _read_markdown_text(md_path)
+    base_dir = os.path.dirname(os.path.abspath(md_path))
+    candidates = [m.group(2) for m in _MD_IMG_RE.finditer(raw)]
+    candidates += [m.group(1) for m in _HTML_IMG_RE.finditer(raw)]
+    paths: List[str] = []
+    for src in candidates:
+        src = (src or "").strip()
+        if not src or src.startswith(("http://", "https://", "data:", "#")):
+            continue
+        local = src.split("#", 1)[0].split("?", 1)[0].strip()
+        if not local:
+            continue
+        resolved = os.path.normpath(os.path.join(base_dir, local))
+        if (
+            os.path.splitext(resolved)[1].lower() in IMAGE_EXTS
+            and os.path.isfile(resolved)
+            and resolved not in paths
+        ):
+            paths.append(resolved)
+    return paths
+
+
+def markdown_referenced_images(root: str) -> set[str]:
+    """递归扫描一个监听根目录，返回所有被 Markdown 引用的本地图片绝对路径。"""
+    root = os.path.abspath(root)
+    referenced: set[str] = set()
+    if not os.path.isdir(root):
+        return referenced
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__pycache__"]
+        for fname in filenames:
+            if os.path.splitext(fname)[1].lower() not in (".md", ".markdown"):
+                continue
+            for img in extract_markdown_image_paths(os.path.join(dirpath, fname)):
+                referenced.add(img)
+    return referenced
+
+
+def is_image_referenced_by_markdown(image_path: str, watch_root: Optional[str] = None) -> bool:
+    """判断图片是否已被某个 Markdown 文档引用，避免重复入库。"""
+    image_path = os.path.abspath(image_path)
+    if watch_root and os.path.isdir(watch_root):
+        return image_path in markdown_referenced_images(watch_root)
+    base = os.path.dirname(image_path)
+    for _ in range(3):
+        if not os.path.isdir(base):
+            break
+        try:
+            names = os.listdir(base)
+        except OSError:
+            break
+        for name in names:
+            if os.path.splitext(name)[1].lower() not in (".md", ".markdown"):
+                continue
+            md_path = os.path.join(base, name)
+            if image_path in extract_markdown_image_paths(md_path):
+                return True
+        base = os.path.dirname(base)
+    return False
+
+
+def _ocr_markdown_images(client, image_paths: List[str]) -> List[str]:
+    """逐张 OCR Markdown 引用的图片，返回可合并进原文的段落。"""
+    blocks: List[str] = []
+    for idx, img_path in enumerate(image_paths[: _MAX_MD_IMAGES], 1):
+        basename = os.path.basename(img_path)
+        try:
+            images = file_to_images(img_path)
+            if not images:
+                blocks.append(f"--- 图片 {idx}: {basename} ---\n(图片读取失败)")
+                continue
+            result, _model = _ocr_structured(client, images[:1], file_path=img_path)
+            text = (result or {}).get("ocr_text") or ""
+            if text.strip():
+                blocks.append(f"--- 图片 {idx}: {basename} ---\n{text}")
+            else:
+                blocks.append(f"--- 图片 {idx}: {basename} ---\n(图片 OCR 无结果)")
+        except Exception as exc:
+            logger.warning("Markdown 图片 OCR 失败 %s: %s", img_path, exc)
+            blocks.append(f"--- 图片 {idx}: {basename} ---\n(图片 OCR 失败: {exc})")
+    if len(image_paths) > _MAX_MD_IMAGES:
+        logger.warning("Markdown 图片超过上限，已跳过 %d 张", len(image_paths) - _MAX_MD_IMAGES)
+    return blocks
 
 
 def generate_thumbnail(path: str, out_path: str, width: int = 200, quality: int = 80) -> str:
@@ -759,6 +865,7 @@ _TEXT_STRUCT_PROMPT = """你是一名笔记结构化助手。下面是用户上�
 4. 提取 3-8 个关键词。
 5. 保留原文的 Markdown 语法（标题、列表、代码块、表格等），不要转换格式。
 6. 如果原文里有明显的重点标注（如下划线、加粗、高亮），用 `[重点: 内容]` 标注。
+7. 如果原文后面附有 `--- 图片 N: 文件名 ---` 段落，这些是 Markdown 内嵌图片的 OCR 结果，必须一并保留在 ocr_text 中，不要删除。
 
 用 JSON 返回：
 
@@ -958,20 +1065,29 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
             raw_text = extract_text_from_file(file_path)
             if not raw_text or not raw_text.strip():
                 raise RuntimeError("文本文件内容为空")
+            is_markdown = ext in (".md", ".markdown")
+            image_blocks: List[str] = []
+            if is_markdown and not is_demo:
+                image_paths = extract_markdown_image_paths(file_path)
+                if image_paths:
+                    image_blocks = _ocr_markdown_images(client, image_paths)
+            structured_text = raw_text
+            if image_blocks:
+                structured_text = raw_text + "\n\n" + "\n\n".join(image_blocks)
 
             used_model_id: Optional[str] = None
             if is_demo:
                 structured = _fallback_text_structured(raw_text, file_path)
                 embedding = _demo_embedding(seed=note_id)
             else:
-                structured = _structured_from_text(client, raw_text, model_id=model_id)
+                structured = _structured_from_text(client, structured_text, model_id=model_id)
                 if structured:
                     # 文本型用 LLM_MODEL，标记为 "text-llm" 便于区分
                     used_model_id = "text-llm"
                 else:
                     # LLM 失败：回退到本地结构化
                     logger.warning("文本型 LLM 结构化失败，回退到本地规则")
-                    structured = _fallback_text_structured(raw_text, file_path)
+                    structured = _fallback_text_structured(structured_text, file_path)
                     used_model_id = "text-fallback"
                 embed_input = (
                     (structured.get("title") or "")
@@ -1023,7 +1139,10 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
             ocr_model=used_model_id,
         )
 
-        task_name = "文本结构化与向量生成" if ext in TEXT_EXTS else "OCR 识别、结构化与向量生成"
+        if ext in TEXT_EXTS:
+            task_name = "Markdown 文字+图片解析、结构化与向量生成" if image_blocks else "文本结构化与向量生成"
+        else:
+            task_name = "OCR 识别、结构化与向量生成"
         database.insert_activity(
             event_type="model",
             message=f"{_activity_model_name(used_model_id)} 完成笔记 #{note_id} 的{task_name}",

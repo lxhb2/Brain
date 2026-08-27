@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import database
-from config import get_config
+from config import get_config, normalize_abs_watch_path, normalize_watch_path
 
 # 内存缓存，避免每次读设置都查库
 _cache: Dict[str, Any] = {}
@@ -225,6 +225,18 @@ def get_watch_folders() -> List[Dict[str, Any]]:
     if val is None:
         val = _seed_watch_folders()
     changed = _ensure_cloud_watch_folder(val)
+    normalized: List[Dict[str, Any]] = []
+    for item in val:
+        if not isinstance(item, dict):
+            continue
+        item = dict(item)
+        old_path = str(item.get("path") or "")
+        new_path = normalize_watch_path(old_path)
+        if new_path != old_path:
+            item["path"] = new_path
+            changed = True
+        normalized.append(item)
+    val = normalized
     if changed or _get_raw("watch_folders") is None:
         _set_raw("watch_folders", val)
     return val  # type: ignore[return-value]
@@ -396,7 +408,7 @@ def add_watch_folder(path: str, device: str, app: str, recursive: bool = True, a
     """手动新增一个监听文件夹。"""
     folders = get_watch_folders()
     # 去重：同路径不重复添加
-    abs_path = os.path.abspath(path)
+    abs_path = normalize_abs_watch_path(path)
     for f in folders:
         if f["path"] == abs_path:
             # 已存在则更新元数据

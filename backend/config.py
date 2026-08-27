@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
@@ -80,6 +81,33 @@ class Settings(BaseSettings):
         # 优先用 settings_store 里持久化的文件夹；回退到 env 默认
         for watch_path in self.WATCH_DIRS.keys():
             Path(watch_path).mkdir(parents=True, exist_ok=True)
+
+
+_WIN_DRIVE_RE = re.compile(r"([A-Za-z]):[\\/](.*)")
+
+
+def normalize_watch_path(path: str) -> str:
+    """把 Windows 盘符路径转换成容器内可访问的 WSL 路径。
+
+    例如：
+      D:\\四季如歌\\... -> /mnt/d/四季如歌/...
+      /app/D:\\四季如歌\\... -> /mnt/d/四季如歌/...
+    """
+    raw = str(path or "").strip().replace("\\", "/")
+    match = _WIN_DRIVE_RE.search(raw)
+    if match:
+        drive = match.group(1).lower()
+        rest = match.group(2).lstrip("/")
+        return f"/mnt/{drive}/{rest}".rstrip("/") or f"/mnt/{drive}"
+    return raw.rstrip("/") or "/"
+
+
+def normalize_abs_watch_path(path: str) -> str:
+    """返回运行时监听目录的绝对路径（Windows 盘符会转为 /mnt/<盘>/...）。"""
+    normalized = normalize_watch_path(path)
+    if normalized.startswith("/"):
+        return normalized
+    return os.path.abspath(normalized)
 
 
 def get_watch_dirs_runtime() -> Dict[str, Dict[str, str]]:

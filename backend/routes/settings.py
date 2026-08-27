@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 import settings_store
 import watcher
-from config import get_config
+from config import get_config, normalize_abs_watch_path
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
@@ -206,7 +206,7 @@ def list_folders() -> Dict[str, Any]:
 @router.post("/folders")
 def add_folder(body: FolderCreate) -> Dict[str, Any]:
     """手动添加一个监听文件夹，并立即生效（重载 watcher）。"""
-    abs_path = os.path.abspath(body.path)
+    abs_path = normalize_abs_watch_path(body.path)
     if not os.path.isdir(abs_path):
         # 尝试创建
         try:
@@ -285,7 +285,7 @@ def scan_folders(body: ScanRequest) -> Dict[str, Any]:
     用于「自动扫描」模式：用户指定一个根目录（如 Syncthing 同步根），
     系统遍历子目录，发现含 .pdf/.png/.jpg 的文件夹并给出建议 device/app。
     """
-    root = os.path.abspath(body.root)
+    root = normalize_abs_watch_path(body.root)
     if not os.path.isdir(root):
         raise HTTPException(status_code=400, detail=f"根目录不存在: {root}")
 
@@ -346,7 +346,7 @@ class PathTest(BaseModel):
 @router.post("/folders/test")
 def test_path(body: PathTest) -> Dict[str, Any]:
     """测试路径是否可访问，返回存在性、可读性、文件数等信息。"""
-    abs_path = os.path.abspath(body.path)
+    abs_path = normalize_abs_watch_path(body.path)
     exists = os.path.exists(abs_path)
     is_dir = os.path.isdir(abs_path)
     readable = os.access(abs_path, os.R_OK) if exists else False

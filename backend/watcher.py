@@ -41,10 +41,11 @@ def _is_temp_or_hidden(fname: str) -> bool:
 class NoteWatcher(FileSystemEventHandler):
     """单目录的文件事件处理器，绑定一组 device/app 元数据。"""
 
-    def __init__(self, device_meta: Dict[str, str]) -> None:
+    def __init__(self, device_meta: Dict[str, str], watch_path: Optional[str] = None) -> None:
         super().__init__()
         self.device = device_meta.get("device")
         self.app = device_meta.get("app")
+        self.watch_path = watch_path
         # 路径 -> 最近处理时间戳，用于去抖
         self._last_seen: Dict[str, float] = {}
         self._lock = threading.Lock()
@@ -59,6 +60,11 @@ class NoteWatcher(FileSystemEventHandler):
             return
         ext = os.path.splitext(fname)[1].lower()
         if ext not in SUPPORTED_EXTS:
+            return
+        if ext in ocr_processor.IMAGE_EXTS and ocr_processor.is_image_referenced_by_markdown(
+            src_path, watch_root=self.watch_path
+        ):
+            logger.info("图片已被 Markdown 引用，跳过独立入库: %s", src_path)
             return
 
         # 去抖：同一文件短时间内只处理一次
@@ -162,7 +168,7 @@ def _schedule_one(watch_path: str, meta: Dict[str, str], observers: List[Observe
         except Exception as e:
             logger.warning("无法创建监听目录 %s: %s", watch_path, e)
             return
-    handler = NoteWatcher(device_meta=meta)
+    handler = NoteWatcher(device_meta=meta, watch_path=watch_path)
     obs = Observer()
     try:
         obs.schedule(handler, watch_path, recursive=True)

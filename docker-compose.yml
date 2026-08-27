@@ -22,6 +22,8 @@ services:
       - ${BRAIN_DATA_DIR:-./data}/synced_notes:/app/data/synced_notes
       # 数据库 + 缩略图持久化（整体 data 目录）
       - ${BRAIN_DATA_DIR:-./data}:/app/data
+      # 允许监听 Windows 盘符目录（D:\... 会规范化为 /mnt/d/...）
+      - /mnt/d:/mnt/d
     extra_hosts:
       # 本机推理服务（如 LM Studio）从容器内固定可达
       - "host.docker.internal:host-gateway"
