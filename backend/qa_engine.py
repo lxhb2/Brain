@@ -7,7 +7,7 @@ ask(question, session_id) 流程（轻量 tool calling Agent）：
      - LLM 可主动调 tool 补充信息（如换关键词再搜笔记、检索特定类型记忆）
      - LLM 可主动调 add_memory 把"用户提到的偏好"存为长期记忆（自我成长）
      - 限制单轮最多 2 次 tool 调用，避免无限循环
-  4. LLM 给出最终答案，要求用 [note_id] 引用来源
+  4. LLM 给出最终答案，要求用 [note_id] / [卡片id] 引用来源
   5. 写入 qa_history（带 session_id），同步 upsert qa_sessions
 
 自我成长：
@@ -33,7 +33,8 @@ _SYSTEM_PROMPT = (
     "你是 Brain 笔记知识库的问答助手。请【仅】依据下方提供的笔记内容、"
     "用户长期记忆、对话历史回答用户问题。"
     "如果笔记中没有相关信息，请明确说明「当前知识库中未找到相关笔记」。"
-    "回答时在句末用 [note_id] 形式引用来源笔记的 id，例如 [12]。"
+    "回答时在句末用 [note_id] 形式引用来源笔记的 id，例如 [12]；"
+    "如果引用了知识卡片，用 [卡片id] 形式，例如 [卡片5]。"
     "保持回答简洁、准确，不要编造笔记中不存在的内容。"
     "如果用户长期记忆中有相关偏好或事实，请优先参考。\n\n"
     "你可以主动调用以下工具来补充信息或学习用户偏好：\n"
@@ -43,6 +44,7 @@ _SYSTEM_PROMPT = (
     "限制：单次回答最多调用 3 次工具，避免无限循环。"
 )
 _CITATION_RE = re.compile(r"\[(\d+)\]")
+_CARD_CITATION_RE = re.compile(r"\[(?:卡片|card)\s*(\d+)\]")
 
 # 多轮对话最多回溯几轮
 _MAX_HISTORY_TURNS = 5
@@ -361,6 +363,18 @@ def _cited_note_ids(answer: str) -> List[int]:
     return ids
 
 
+def _cited_card_ids(answer: str) -> List[int]:
+    """从最终答案中提取真实引用的知识卡片 ID。"""
+    seen: set[int] = set()
+    ids = []
+    for value in _CARD_CITATION_RE.findall(answer or ""):
+        card_id = int(value)
+        if card_id not in seen:
+            seen.add(card_id)
+            ids.append(card_id)
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # Tool 实现
 # ---------------------------------------------------------------------------
@@ -643,9 +657,15 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
             database.mark_notes_used(cited_note_ids)
         except Exception as e:
             logger.warning("累计答案真实引用的笔记失败 qa_id=%s: %s", qa_id, e)
+    cited_card_ids = _cited_card_ids(answer)
+    if cited_card_ids:
+        try:
+            database.mark_cards_used(cited_card_ids)
+        except Exception as e:
+            logger.warning("累计答案真实引用的卡片失败 qa_id=%s: %s", qa_id, e)
     database.insert_activity(
         event_type="model",
-        message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id}，真实引用 {len(cited_note_ids)} 条笔记，调用 {len(tools_used)} 次工具",
+        message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id}，真实引用 {len(cited_note_ids)} 条笔记 / {len(cited_card_ids)} 张卡片，调用 {len(tools_used)} 次工具",
         model=cfg.QA_MODEL or cfg.LLM_MODEL,
     )
 
@@ -653,7 +673,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     card_draft: Optional[Dict[str, Any]] = None
     try:
         # 只在有 citations 或 memories 时尝试生成（寒暄类直接跳过）
-        if citations or memories_used:
+        if citations or memories_used or relevant_cards:
             draft = _generate_card_draft(question, answer, citations)
             if draft and not draft.get("skip"):
                 # 提取引用的 note_id 列表
@@ -677,11 +697,13 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         logger.warning("卡片草稿生成失败（不影响主流程）: %s", e)
 
+    cited_card_set = set(cited_card_ids)
+    cards_used = [card for card in relevant_cards if card.get("id") in cited_card_set]
     return {
         "answer": answer,
         "citations": citations,
         "memories_used": memories_used,
-        "cards_used": relevant_cards,
+        "cards_used": cards_used,
         "qa_id": qa_id,
         "tools_used": tools_used,
         "card_draft": card_draft,

@@ -312,6 +312,8 @@ def init_db() -> None:
             "last_reviewed_at TEXT",
             "next_review_at TEXT",
             "mastery_level TEXT DEFAULT 'novice'",
+            "use_count INTEGER DEFAULT 0",
+            "last_used_at TEXT",
         ):
             name = column.split()[0]
             try:
@@ -788,7 +790,27 @@ def mark_notes_used(note_ids: Sequence[int]) -> int:
                 """,
                 (now, note_id),
             )
-        return cur.rowcount
+        return len(ids)
+
+
+def mark_cards_used(card_ids: Sequence[int]) -> int:
+    """问答答案真实引用知识卡片后累计复用次数。"""
+    ids = list(dict.fromkeys(int(c) for c in card_ids if c))
+    if not ids:
+        return 0
+    now = _now()
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        for card_id in ids:
+            cur.execute(
+                """
+                UPDATE knowledge_cards
+                SET use_count = use_count + 1, last_used_at = ?
+                WHERE id = ?;
+                """,
+                (now, card_id),
+            )
+        return len(ids)
 
 
 # ---------------------------------------------------------------------------
@@ -1368,7 +1390,8 @@ def search_knowledge_cards_for_query(query_text: str, top_k: int = 2) -> List[Di
         overlap = len(query_tokens & _text_tokens(haystack)) / len(query_tokens)
         verdict_boost = 0.08 if card.get("verdict") == "correct" else 0.0
         mastery_boost = 0.04 if card.get("mastery_level") == "validated" else 0.0
-        score = overlap * 0.90 + verdict_boost + mastery_boost
+        reuse_boost = min(float(card.get("use_count") or 0), 8.0) * 0.004
+        score = overlap * 0.90 + verdict_boost + mastery_boost + reuse_boost
         if score >= 0.12:
             scored.append((score, card))
     scored.sort(key=lambda item: item[0], reverse=True)
@@ -1406,6 +1429,9 @@ def get_stats() -> Dict[str, Any]:
         cards_validated = conn.execute(
             "SELECT COUNT(*) AS n FROM knowledge_cards WHERE verdict='correct';"
         ).fetchone()["n"]
+        cards_used = conn.execute(
+            "SELECT COUNT(*) AS n FROM knowledge_cards WHERE use_count > 0;"
+        ).fetchone()["n"]
         due_cards = conn.execute(
             """
             SELECT COUNT(*) AS n FROM knowledge_cards
@@ -1434,6 +1460,7 @@ def get_stats() -> Dict[str, Any]:
             "validation_depth": round(float(cards_validated) / cards_total, 4) if cards_total else 0,
             "cards_total": int(cards_total),
             "cards_validated": int(cards_validated),
+            "cards_used": int(cards_used),
             "due_cards": int(due_cards),
             "latest_review_date": latest_growth_review["review_date"] if latest_growth_review else None,
         },

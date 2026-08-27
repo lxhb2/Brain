@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Send, ThumbsUp, ThumbsDown, Loader2, Sparkles, FileText, Check, X, Brain, Plus, Trash2, ChevronRight, MessageSquare, Pencil, Wrench, Layers, Save } from 'lucide-react'
-import { api, type QaAskResponse, type Citation, type UserMemory, type QaSession, type ToolCall, type CardDraft, type FinalizeCardResponse } from '@/api/client'
+import { api, type QaAskResponse, type Citation, type UserMemory, type QaSession, type ToolCall, type CardDraft, type FinalizeCardResponse, type KnowledgeCard } from '@/api/client'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
 
@@ -13,6 +13,7 @@ interface ChatMessage {
   feedback?: 'up' | 'down'
   memories_used?: UserMemory[]
   tools_used?: ToolCall[]
+  cards_used?: KnowledgeCard[]
   card_draft?: CardDraft | null
   card_saved?: boolean
 }
@@ -124,6 +125,7 @@ export default function QA() {
           qa_id: res.qa_id,
           memories_used: res.memories_used?.map((mu) => mu.memory),
           tools_used: res.tools_used,
+          cards_used: res.cards_used,
           card_draft: res.card_draft ?? null,
         },
       ])
@@ -487,6 +489,25 @@ export default function QA() {
                               {TOOL_LABEL[t.name] || t.name}
                               {t.name === 'add_memory' && ' ✓'}
                             </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* 引用的长期记忆 */}
+                      {msg.cards_used && msg.cards_used.length > 0 && (
+                        <div className="ml-1 flex flex-wrap items-center gap-1">
+                          <span className="font-mono text-[10px] uppercase tracking-wider text-flux/70">
+                            <Layers className="mr-1 inline h-3 w-3" />复用卡片
+                          </span>
+                          {msg.cards_used.map((card) => (
+                            <Link
+                              key={card.id}
+                              to={`/cards/${card.id}`}
+                              className="rounded border border-flux/20 bg-flux/5 px-1.5 py-0.5 text-[10px] text-flux/80 hover:bg-flux/10"
+                            >
+                              {card.title.slice(0, 24)}
+                              {card.title.length > 24 ? '…' : ''}
+                            </Link>
                           ))}
                         </div>
                       )}

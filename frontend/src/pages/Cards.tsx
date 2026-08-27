@@ -144,6 +144,19 @@ export default function Cards() {
                   </div>
                 )}
 
+                {/* 复用统计 */}
+                <div className="mt-2 flex items-center gap-2 font-mono text-[10px] text-dust/70">
+                  <span className="rounded bg-flux/10 px-1.5 py-0.5 text-flux/90">
+                    复用 {c.use_count ?? 0} 次
+                  </span>
+                  <span className="rounded bg-white/5 px-1.5 py-0.5">
+                    复验 {c.review_count ?? 0} 次
+                  </span>
+                  {c.last_used_at && (
+                    <span>上次 {shortDate(c.last_used_at)}</span>
+                  )}
+                </div>
+
                 {/* 查看详情 */}
                 <Link
                   to={`/cards/${c.id}`}

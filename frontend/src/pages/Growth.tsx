@@ -98,10 +98,11 @@ export default function Growth() {
         )}
 
         {growth && (
-          <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5">
             <Metric label="知识密度" value={growth.knowledge_density} />
             <Metric label="调用广度" value={growth.call_frequency} />
             <Metric label="验证深度" value={growth.validation_depth} />
+            <Metric label="卡片复用率" value={Math.min(1, growth.cards_used / Math.max(1, growth.cards_total))} />
             <Metric label="待复验比例" value={Math.min(1, growth.due_cards / Math.max(1, growth.cards_total))} />
           </section>
         )}

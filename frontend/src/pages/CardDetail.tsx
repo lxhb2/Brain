@@ -70,6 +70,17 @@ export default function CardDetail() {
               #{card.id} · {shortDate(card.created_at)}
               {card.session_id && ` · 会话 ${card.session_id.slice(0, 12)}`}
             </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 font-mono text-[10px] text-dust/60">
+              <span className="rounded bg-white/5 px-1.5 py-0.5">
+                复用 {card.use_count ?? 0} 次
+              </span>
+              <span className="rounded bg-white/5 px-1.5 py-0.5">
+                复验 {card.review_count ?? 0} 次
+              </span>
+              {card.last_used_at && (
+                <span>上次复用 {shortDate(card.last_used_at)}</span>
+              )}
+            </div>
           </div>
         </div>
         <button

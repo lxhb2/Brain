@@ -65,6 +65,7 @@ export interface QaAskResponse {
   qa_id: number
   memories_used?: MemoryUsed[]
   tools_used?: ToolCall[]
+  cards_used?: KnowledgeCard[]
   card_draft?: CardDraft | null
 }
 
@@ -94,6 +95,13 @@ export interface KnowledgeCard {
   status: string
   created_at: string
   updated_at: string
+  use_count: number
+  last_used_at: string | null
+  verdict?: string | null
+  review_count?: number
+  last_reviewed_at?: string | null
+  next_review_at?: string | null
+  mastery_level?: string | null
   links?: CardLink[]
 }
 
@@ -175,6 +183,7 @@ export interface GrowthStats {
   validation_depth: number
   cards_total: number
   cards_validated: number
+  cards_used: number
   due_cards: number
   latest_review_date: string | null
 }
