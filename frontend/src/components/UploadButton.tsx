@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Camera, ImagePlus, FileText, Loader2, X, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Camera, ImagePlus, FileText, FileCode2, Loader2, X, CheckCircle2, AlertCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/api/client'
 import { useDeviceDetect } from '@/hooks/useDeviceDetect'
@@ -14,6 +14,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const docInputRef = useRef<HTMLInputElement>(null)
+  const mdInputRef = useRef<HTMLInputElement>(null)
   const [open, setOpen] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [results, setResults] = useState<UploadResult[] | null>(null)
@@ -54,6 +55,7 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
       if (fileInputRef.current) fileInputRef.current.value = ''
       if (cameraInputRef.current) cameraInputRef.current.value = ''
       if (docInputRef.current) docInputRef.current.value = ''
+      if (mdInputRef.current) mdInputRef.current.value = ''
     }
   }
 
@@ -94,6 +96,14 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
         multiple
         className="hidden"
         onChange={(e) => handleFiles(e.target.files, 'document')}
+      />
+      <input
+        ref={mdInputRef}
+        type="file"
+        accept=".md,.markdown,text/markdown,text/x-markdown"
+        multiple
+        className="hidden"
+        onChange={(e) => handleFiles(e.target.files, 'markdown')}
       />
 
       {/* 上传面板 */}
@@ -209,8 +219,18 @@ export function UploadButton({ onUploaded }: { onUploaded?: () => void }) {
                     <div className="font-mono text-[10px] text-dust">支持 TXT / Markdown / Word（.docx）</div>
                   </div>
                 </button>
+                <button
+                  onClick={() => mdInputRef.current?.click()}
+                  className="flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3.5 text-left transition-all hover:bg-white/10 active:scale-[0.98]"
+                >
+                  <FileCode2 className="h-5 w-5 text-emerald-300" strokeWidth={1.5} />
+                  <div>
+                    <div className="text-sm text-starlight">上传 Markdown</div>
+                    <div className="font-mono text-[10px] text-dust">支持 .md / .markdown，直接抽取正文，不走 OCR</div>
+                  </div>
+                </button>
                 <div className="pt-2 text-center font-mono text-[10px] text-dust/70">
-                  图片走 OCR · 文档走文本抽取 · 单文件最大 50MB
+                  图片走 OCR · 文档 / Markdown 走文本抽取 · 单文件最大 50MB
                 </div>
               </div>
             )}
