@@ -57,6 +57,7 @@ score = 0.70 * cosine_similarity(query, note)
 - Agent 可主动调用工具补检：`search_notes` / `search_memory` / `add_memory`
 - 单轮最多 3 次工具调用，防止死循环
 - 答案强制附带 `[note_id]` 引用，只有真实出现的引用才计入调用频次
+- 复用知识卡片时用 `[卡片id]` 引用，例如 `[卡片5]`，卡片复用次数和上次复用时间会自动更新
 - 多轮对话支持最近 5 轮历史上下文
 
 ### 知识图谱
@@ -225,6 +226,7 @@ npm install && npm run dev
 - 数据库每日 02:30 自动备份到 `data/backups/`
 - 手动备份：`./scripts/backup.sh`
 - 不要把数据放在 `/mnt/c` 或 `/mnt/f` 等 Windows 挂载路径上（性能差且权限不稳定）
+- Windows 登录时会自动执行 `scripts/ensure-brain-mount.ps1` 检查 Docker 挂载是否脱离真实数据目录；发现异常会自动重建容器并等待健康检查，避免笔记“刷新后消失”
 
 完整运维说明见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。
 
@@ -239,6 +241,8 @@ npm install && npm run dev
 | GET | `/api/notes` | 笔记列表 |
 | GET | `/api/notes/{id}` | 笔记详情 |
 | POST | `/api/qa/ask` | RAG 问答 |
+| GET | `/api/cards` | 知识卡片列表 |
+| GET | `/api/cards/{id}` | 卡片详情（含复用次数） |
 | GET | `/api/cards/due/review` | 到期复验卡片 |
 | POST | `/api/system/growth-triage?limit=3` | 手动触发入库分诊 |
 | POST | `/api/system/growth-review` | 手动触发每日审核 |
