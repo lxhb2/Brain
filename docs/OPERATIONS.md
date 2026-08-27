@@ -453,7 +453,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass ^
   -File 'F:\桌面\Brain\scripts\ensure-brain-mount.ps1'
 ```
 
-修复逻辑会重建 `backend`、`cloud` 和 `syncthing` 容器，然后等待 `/api/health` 恢复。它不会删除、移动或覆盖 `/home/lxhb/.local/var/brain` 里的数据。
+修复逻辑会先等待 Docker daemon 就绪，再重建 `backend`、`cloud` 和 `syncthing` 容器，最多重试 6 轮，每轮等待 `/api/health` 并复核探针文件。它不会删除、移动或覆盖 `/home/lxhb/.local/var/brain` 里的数据。
 
 检查 `.env` 是否仍然是：
 
