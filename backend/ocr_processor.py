@@ -362,6 +362,7 @@ _STRUCTURED_JSON_SCHEMA = {
             "ocr_text": {"type": "string"},
             "summary": {"type": "string"},
             "keywords": {"type": "array", "items": {"type": "string"}},
+            "mermaid": {"type": "string"},
         },
         "required": ["title", "ocr_text", "summary", "keywords"],
         "additionalProperties": False,
@@ -428,6 +429,10 @@ _OCR_PROMPT = """你是一名专业的手写笔记 OCR 与结构化助手。请�
 - **下划线/重点标记**：用下划线的重点字词用 `[重点: 内容]` 标注。
 - **圈选/方框**：被圈起来或方框包围的关键字用 `[圈选: 内容]` 标注。
 
+如果内容中存在流程、箭头指向、分支或节点关系，额外用 Mermaid 表达：
+输出 `mermaid` 字段，值为一个完整的 `flowchart LR` 代码（不含 ``` 围栏）；
+没有明显关系图时返回空字符串。不要编造图中不存在的连接。
+
 识别完成后，再用同样的 JSON 格式返回结构化字段：
 
 ```json
@@ -435,7 +440,8 @@ _OCR_PROMPT = """你是一名专业的手写笔记 OCR 与结构化助手。请�
   "title": "简短标题（5-15字，概括主题）",
   "ocr_text": "完整识别的文本（含公式/表格/语义标签的 markdown）",
   "summary": "1-3 句摘要，提炼核心知识点",
-  "keywords": ["关键词1", "关键词2", ...]
+  "keywords": ["关键词1", "关键词2", ...],
+  "mermaid": "flowchart LR\n  A[起点] --> B[终点]"
 }
 ```
 
@@ -514,12 +520,14 @@ def _call_vision_model(client, model_id: str, images: List[str]) -> Dict[str, An
         for k in r.get("keywords") or []:
             if k not in kw_set:
                 kw_set.append(k)
+    mermaid_parts = [str(r.get("mermaid") or "").strip() for r in page_results if r.get("mermaid")]
 
     return {
         "title": merged_title or "(多页笔记)",
         "ocr_text": merged_ocr,
         "summary": merged_summary,
         "keywords": kw_set[:10],
+        "mermaid": "\n\n".join(mermaid_parts),
     }
 
 
@@ -550,6 +558,8 @@ def _call_vision_single(client, model_id: str, images: List[str],
 - **下划线重点**：用 `[重点: 内容]` 标注。
 - **圈选方框**：用 `[圈选: 内容]` 标注。
 
+本页若有流程、箭头关系或分支，输出 `mermaid` 字段为完整的 `flowchart LR` 代码；没有则返回空字符串。
+
 识别完成后，用 JSON 返回本页的结构化字段：
 
 ```json
@@ -557,7 +567,8 @@ def _call_vision_single(client, model_id: str, images: List[str],
   "title": "本页标题（5-15字）",
   "ocr_text": "本页完整识别的文本（含语义标签）",
   "summary": "本页 1-2 句摘要",
-  "keywords": ["本页关键词1", "本页关键词2"]
+  "keywords": ["本页关键词1", "本页关键词2"],
+  "mermaid": ""
 }}
 ```
 
@@ -866,6 +877,7 @@ _TEXT_STRUCT_PROMPT = """你是一名笔记结构化助手。下面是用户上�
 5. 保留原文的 Markdown 语法（标题、列表、代码块、表格等），不要转换格式。
 6. 如果原文里有明显的重点标注（如下划线、加粗、高亮），用 `[重点: 内容]` 标注。
 7. 如果原文后面附有 `--- 图片 N: 文件名 ---` 段落，这些是 Markdown 内嵌图片的 OCR 结果，必须一并保留在 ocr_text 中，不要删除。
+8. 如果原文包含流程、箭头关系或分支，输出 `mermaid` 字段为完整的 `flowchart LR` 代码；没有明显关系图时返回空字符串。
 
 用 JSON 返回：
 
@@ -874,7 +886,8 @@ _TEXT_STRUCT_PROMPT = """你是一名笔记结构化助手。下面是用户上�
   "title": "标题",
   "ocr_text": "原文全文",
   "summary": "1-2 句摘要",
-  "keywords": ["关键词1", "关键词2"]
+  "keywords": ["关键词1", "关键词2"],
+  "mermaid": ""
 }}
 ```
 
@@ -1137,6 +1150,7 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
             thumbnail_path=thumb_path if os.path.exists(thumb_path) else None,
             status="done",
             ocr_model=used_model_id,
+            mermaid=structured.get("mermaid") or None,
         )
 
         if ext in TEXT_EXTS:

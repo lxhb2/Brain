@@ -1,82 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, Copy, Check, RefreshCw, Smartphone, AppWindow, Calendar, Pencil, Save, X, BadgeCheck, RotateCcw, Trash2, FileText, Download } from 'lucide-react'
 import { api, type Note } from '@/api/client'
 import { StatusBadge, formatDate } from '@/components/StatusBadge'
+import { MarkdownView } from '@/components/MarkdownView'
 import { cn } from '@/lib/utils'
-
-/**
- * 把含语义标签的 OCR 文本渲染成富文本。
- *
- * 支持的标签（与后端 prompt 对应）：
- * - ~~删除内容~~        → <del> 删除线
- * - [批注: 内容]        → 琥珀色 inline-block
- * - [→: A 指向 B]       → 蓝色箭头符号 + 说明
- * - [重点: 内容]        → 青色下划线
- * - [圈选: 内容]        → 橙色边框 inline-block
- *
- * 实现思路：用正则切分文本为片段，匹配到的标签渲染成 React 节点。
- */
-function renderOcrRichText(text: string) {
-  // 统一正则：按顺序匹配所有支持的标签
-  // - ~~删除~~         用非贪婪匹配到结尾的 ~~
-  // - [批注:...] [→:...] [重点:...] [圈选:...]  用 [^\]]* 匹配方括号内内容
-  const pattern = /(~~[^~]+~~|\[批注:[^\]]*\]|\[→:[^\]]*\]|\[重点:[^\]]*\]|\[圈选:[^\]]*\])/g
-  const parts: ReactNode[] = []
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-  let key = 0
-
-  while ((match = pattern.exec(text)) !== null) {
-    // 先把前面的纯文本推入
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index))
-    }
-    const token = match[0]
-    if (token.startsWith('~~')) {
-      // ~~删除~~ → 删除线
-      const inner = token.slice(2, -2)
-      parts.push(<del key={key++} className="text-dust/60 line-through">{inner}</del>)
-    } else if (token.startsWith('[批注:')) {
-      const inner = token.slice(4, -1) // 去掉 "[批注:" 和 "]"
-      parts.push(
-        <span key={key++} className="mx-1 inline-block rounded bg-amber-400/15 px-1.5 py-0.5 text-amber-300 text-[0.85em] align-middle">
-          📝 {inner}
-        </span>
-      )
-    } else if (token.startsWith('[→:')) {
-      const inner = token.slice(3, -1)
-      parts.push(
-        <span key={key++} className="mx-1 inline-block rounded bg-sky-400/15 px-1.5 py-0.5 text-sky-300 text-[0.85em] align-middle">
-          → {inner}
-        </span>
-      )
-    } else if (token.startsWith('[重点:')) {
-      const inner = token.slice(4, -1)
-      parts.push(
-        <span key={key++} className="underline decoration-cyan-400 decoration-2 underline-offset-2 text-cyan-200">
-          {inner}
-        </span>
-      )
-    } else if (token.startsWith('[圈选:')) {
-      const inner = token.slice(4, -1)
-      parts.push(
-        <span key={key++} className="mx-1 inline-block rounded border border-orange-400/60 px-1.5 py-0.5 text-orange-200 text-[0.85em]">
-          {inner}
-        </span>
-      )
-    } else {
-      // 兜底：原样
-      parts.push(token)
-    }
-    lastIndex = match.index + token.length
-  }
-  // 剩余文本
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex))
-  }
-  return parts
-}
 
 /**
  * 根据文件扩展名渲染原始文件预览。
@@ -157,8 +85,10 @@ export default function NoteDetail() {
   const [editing, setEditing] = useState(false)
   const [editTitle, setEditTitle] = useState('')
   const [editOcrText, setEditOcrText] = useState('')
+  const [editMermaid, setEditMermaid] = useState('')
   const [editSummary, setEditSummary] = useState('')
   const [editKeywords, setEditKeywords] = useState('') // 逗号分隔
+  const [editPreview, setEditPreview] = useState(false)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -209,8 +139,10 @@ export default function NoteDetail() {
     if (!note) return
     setEditTitle(note.title ?? '')
     setEditOcrText(note.ocr_text ?? '')
+    setEditMermaid(note.mermaid ?? '')
     setEditSummary(note.summary ?? '')
     setEditKeywords((note.keywords ?? []).join(', '))
+    setEditPreview(false)
     setEditing(true)
   }
 
@@ -232,6 +164,7 @@ export default function NoteDetail() {
         ocr_text: editOcrText,
         summary: editSummary,
         keywords,
+        mermaid: editMermaid,
         recompute_embedding: true,
       })
       setNote(res.note)
@@ -481,11 +414,38 @@ export default function NoteDetail() {
                 />
               </div>
               <div className="flex min-h-0 flex-1 flex-col">
-                <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">OCR 文本</label>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label className="font-mono text-[10px] uppercase tracking-wider text-dust/70">OCR 文本（Markdown）</label>
+                  <button
+                    type="button"
+                    onClick={() => setEditPreview((v) => !v)}
+                    className="rounded border border-white/10 px-2 py-0.5 font-mono text-[10px] text-dust hover:border-flux/30 hover:text-flux"
+                  >
+                    {editPreview ? '编辑' : '预览'}
+                  </button>
+                </div>
+                {editPreview ? (
+                  <div className="min-h-[300px] flex-1 overflow-auto rounded-md border border-white/10 bg-void-200/50 px-3 py-2">
+                    <MarkdownView content={editOcrText} mermaidCode={editMermaid} />
+                  </div>
+                ) : (
+                  <textarea
+                    value={editOcrText}
+                    onChange={(e) => setEditOcrText(e.target.value)}
+                    className="min-h-[300px] flex-1 resize-y rounded-md border border-white/10 bg-void-200/50 px-3 py-2 font-mono text-xs leading-relaxed text-starlight focus:border-flux/40 focus:outline-none md:text-sm"
+                  />
+                )}
+              </div>
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">
+                  Mermaid 关系图代码（可选）
+                </label>
                 <textarea
-                  value={editOcrText}
-                  onChange={(e) => setEditOcrText(e.target.value)}
-                  className="min-h-[300px] flex-1 resize-y rounded-md border border-white/10 bg-void-200/50 px-3 py-2 font-mono text-xs leading-relaxed text-starlight focus:border-flux/40 focus:outline-none md:text-sm"
+                  value={editMermaid}
+                  onChange={(e) => setEditMermaid(e.target.value)}
+                  rows={4}
+                  placeholder={"flowchart LR\n  A[问题] --> B[方案]"}
+                  className="w-full resize-y rounded-md border border-white/10 bg-void-200/50 px-3 py-2 font-mono text-xs leading-relaxed text-starlight placeholder:text-dust/40 focus:border-flux/40 focus:outline-none"
                 />
               </div>
               <div className="rounded-md border border-flux/10 bg-flux/[0.03] p-2 text-[11px] text-dust">
@@ -502,18 +462,7 @@ export default function NoteDetail() {
               )}
               {note.ocr_text ? (
                 <>
-                  <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-starlight/80 md:text-sm">
-                    {renderOcrRichText(note.ocr_text)}
-                  </pre>
-                  {/* 语义标签图例 */}
-                  <div className="mt-4 flex flex-wrap gap-2 border-t border-white/5 pt-3 text-[10px] text-dust/60">
-                    <span>图例：</span>
-                    <span className="text-dust/60 line-through">删除</span>
-                    <span className="rounded bg-amber-400/15 px-1 text-amber-300">📝 批注</span>
-                    <span className="rounded bg-sky-400/15 px-1 text-sky-300">→ 箭头</span>
-                    <span className="underline decoration-cyan-400 text-cyan-200">重点</span>
-                    <span className="rounded border border-orange-400/60 px-1 text-orange-200">圈选</span>
-                  </div>
+                  <MarkdownView content={note.ocr_text} mermaidCode={note.mermaid} />
                 </>
               ) : (
                 <div className="rounded-lg border border-dashed border-white/10 px-4 py-8 text-center font-mono text-xs text-dust/50">

@@ -297,6 +297,7 @@ def init_db() -> None:
             "triaged_at TEXT",
             "use_count INTEGER DEFAULT 0",
             "last_used_at TEXT",
+            "mermaid TEXT",
         ):
             name = column.split()[0]
             try:
@@ -543,6 +544,7 @@ def update_note_fields(
     ocr_text: Optional[str] = None,
     summary: Optional[str] = None,
     keywords: Optional[List[str]] = None,
+    mermaid: Optional[str] = None,
     embedding: Optional[Sequence[float]] = None,
     manually_edited: Optional[bool] = None,
 ) -> None:
@@ -565,6 +567,9 @@ def update_note_fields(
     if keywords is not None:
         sets.append("keywords = ?")
         params.append(json.dumps(keywords, ensure_ascii=False))
+    if mermaid is not None:
+        sets.append("mermaid = ?")
+        params.append(mermaid)
     if embedding is not None:
         sets.append("embedding = ?")
         params.append(json.dumps(list(embedding)))
@@ -591,6 +596,7 @@ def update_note_content(
     thumbnail_path: Optional[str] = None,
     status: str = "done",
     ocr_model: Optional[str] = None,
+    mermaid: Optional[str] = None,
 ) -> None:
     """写入 OCR/结构化结果，并把状态置为 done。
 
@@ -605,7 +611,7 @@ def update_note_content(
                 UPDATE notes
                 SET title = ?, ocr_text = ?, summary = ?, keywords = ?,
                     embedding = ?, thumbnail_path = ?, status = ?, processed_at = ?,
-                    ocr_model = ?
+                    ocr_model = ?, mermaid = ?
                 WHERE id = ?;
                 """,
                 (
@@ -618,6 +624,7 @@ def update_note_content(
                     status,
                     _now(),
                     ocr_model,
+                    mermaid,
                     note_id,
                 ),
             )

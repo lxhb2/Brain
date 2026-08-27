@@ -8,6 +8,7 @@ export interface Note {
   file_path: string
   title: string | null
   ocr_text: string | null
+  mermaid: string | null
   summary: string | null
   keywords: string[] | null
   source_device: string | null
@@ -458,6 +459,7 @@ export const api = {
     ocr_text?: string
     summary?: string
     keywords?: string[]
+    mermaid?: string
     recompute_embedding?: boolean
   }) => patchJSON<{ note_id: number; updated: boolean; manually_edited: boolean; note: Note }>(
     `/api/notes/${id}`,

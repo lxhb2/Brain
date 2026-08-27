@@ -104,6 +104,7 @@ class EditNoteRequest(BaseModel):
     ocr_text: Optional[str] = None
     summary: Optional[str] = None
     keywords: Optional[List[str]] = None
+    mermaid: Optional[str] = None
     knowledge_kind: Optional[str] = None
     practice_status: Optional[str] = None
     condition_text: Optional[str] = None
@@ -138,6 +139,8 @@ def edit_note(note_id: int, body: EditNoteRequest):
         updates["summary"] = body.summary.strip()
     if body.keywords is not None:
         updates["keywords"] = [k.strip() for k in body.keywords if k.strip()]
+    if body.mermaid is not None:
+        updates["mermaid"] = body.mermaid.strip()
 
     if body.knowledge_kind is not None:
         if body.knowledge_kind not in ("practice", "reference", "noise", "unclassified"):
@@ -203,6 +206,7 @@ def edit_note(note_id: int, body: EditNoteRequest):
         ocr_text=updates.get("ocr_text"),
         summary=updates.get("summary"),
         keywords=updates.get("keywords"),
+        mermaid=updates.get("mermaid"),
         manually_edited=True,
     )
 
