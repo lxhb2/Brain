@@ -18,6 +18,29 @@ function normalizeOcrMarkdown(text: string) {
     .replace(/\[圈选:([^\]]*)\]/g, '**圈选:$1**')
 }
 
+function resolveMarkdownImagePath(src: string | undefined, noteFilePath?: string | null) {
+  const raw = (src || '').trim()
+  if (!raw) return ''
+  if (/^(https?:|data:image|blob:)/i.test(raw) || raw.startsWith('/api/')) return raw
+
+  let path = raw
+  if (!path.startsWith('/')) {
+    const base = (noteFilePath || '').replace(/\\/g, '/')
+    const directory = base.slice(0, Math.max(0, base.lastIndexOf('/')))
+    path = `${directory}/${raw}`
+  }
+
+  const segments = path.split('/')
+  const resolved: string[] = []
+  for (const segment of segments.slice(1)) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') resolved.pop()
+    else resolved.push(segment)
+  }
+  path = `/${resolved.join('/')}`
+  return `/api/files/markdown-image?path=${encodeURIComponent(path)}`
+}
+
 function MermaidBlock({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null)
   const [error, setError] = useState('')
@@ -62,11 +85,13 @@ function MermaidBlock({ code }: { code: string }) {
 export function MarkdownView({
   content,
   mermaidCode,
+  noteFilePath,
   className = '',
 }: {
   content: string
   mermaidCode?: string | null
   className?: string
+  noteFilePath?: string | null
 }) {
   const markdown = useMemo(() => normalizeOcrMarkdown(content || ''), [content])
 
@@ -132,7 +157,13 @@ export function MarkdownView({
               {children as ReactNode}
             </a>
           ),
-          img: ({ src, alt }) => <img src={src} alt={alt ?? ''} className="my-2 max-w-full rounded-lg border border-white/10" />,
+          img: ({ src, alt }) => (
+            <img
+              src={resolveMarkdownImagePath(src, noteFilePath)}
+              alt={alt ?? ''}
+              className="my-2 max-w-full rounded-lg border border-white/10"
+            />
+          ),
           hr: () => <hr className="my-4 border-white/10" />,
         }}
       >

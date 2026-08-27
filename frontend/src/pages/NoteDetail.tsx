@@ -426,7 +426,7 @@ export default function NoteDetail() {
                 </div>
                 {editPreview ? (
                   <div className="min-h-[300px] flex-1 overflow-auto rounded-md border border-white/10 bg-void-200/50 px-3 py-2">
-                    <MarkdownView content={editOcrText} mermaidCode={editMermaid} />
+                    <MarkdownView content={editOcrText} mermaidCode={editMermaid} noteFilePath={note.file_path} />
                   </div>
                 ) : (
                   <textarea
@@ -462,7 +462,7 @@ export default function NoteDetail() {
               )}
               {note.ocr_text ? (
                 <>
-                  <MarkdownView content={note.ocr_text} mermaidCode={note.mermaid} />
+                  <MarkdownView content={note.ocr_text} mermaidCode={note.mermaid} noteFilePath={note.file_path} />
                 </>
               ) : (
                 <div className="rounded-lg border border-dashed border-white/10 px-4 py-8 text-center font-mono text-xs text-dust/50">

@@ -11,7 +11,8 @@ import shutil
 import sys
 from typing import Any, Dict
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import database
@@ -19,9 +20,23 @@ import graph_api
 import growth
 import scheduler
 import settings_store
-from config import get_config
+from config import get_config, get_watch_dirs_runtime
 
 router = APIRouter(prefix="/api", tags=["system"])
+
+_MARKDOWN_IMAGE_TYPES = {
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+
+
+def _is_realpath_inside(candidate: str, root: str) -> bool:
+    """Check a fully-resolved path without allowing ../ traversal outside a root."""
+    return candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep)
 
 
 @router.get("/health")
@@ -78,7 +93,27 @@ def health() -> Dict[str, Any]:
         "llm_model": model_cfg.get("llm_model", cfg.LLM_MODEL),
         "qa_model": model_cfg.get("qa_model", cfg.QA_MODEL),
         "embedding_model": model_cfg.get("embedding_model", cfg.EMBEDDING_MODEL),
-    }
+}
+
+
+@router.get("/files/markdown-image")
+def get_markdown_image(path: str = Query(min_length=1)):
+    """Serve an image referenced by an ingested Markdown note."""
+    cfg = get_config()
+    roots = list(get_watch_dirs_runtime().keys())
+    synced_root = os.path.abspath(cfg.SYNCED_NOTES_ROOT)
+    roots.append(os.path.dirname(synced_root))
+
+    requested = os.path.realpath(path)
+    if os.path.splitext(requested)[1].lower() not in _MARKDOWN_IMAGE_TYPES:
+        raise HTTPException(status_code=404, detail="不是支持的图片文件")
+    if not any(_is_realpath_inside(requested, os.path.realpath(str(root))) for root in roots):
+        raise HTTPException(status_code=404, detail="路径不在监听目录内")
+    if not os.path.isfile(requested):
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    media_type = _MARKDOWN_IMAGE_TYPES[os.path.splitext(requested)[1].lower()]
+    return FileResponse(requested, media_type=media_type)
 
 
 @router.get("/stats")
