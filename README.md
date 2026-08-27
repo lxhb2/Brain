@@ -165,6 +165,7 @@ SFTPGo 云盘上传   -------------> data/cloud/
 │   ├── components/         # Layout / NoteNode / GraphFilters ...
 │   └── api/client.ts       # 后端 API 封装
 ├── scripts/                # 部署、备份、mDNS、端口转发等脚本
+├── docs/BUILD_YOUR_OWN_KNOWLEDGE_BASE.md  # 从零搭建个人知识库实操手册
 ├── docs/OPERATIONS.md      # 详细运维手册
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
@@ -228,7 +229,8 @@ npm install && npm run dev
 - 不要把数据放在 `/mnt/c` 或 `/mnt/f` 等 Windows 挂载路径上（性能差且权限不稳定）
 - Windows 登录时会自动执行 `scripts/ensure-brain-mount.ps1` 检查 Docker 挂载是否脱离真实数据目录；发现异常会自动重建容器并等待健康检查，避免笔记“刷新后消失”
 
-完整运维说明见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。
+完整运维说明见 [docs/OPERATIONS.md](docs/OPERATIONS.md)，从零搭建教程见
+[docs/BUILD_YOUR_OWN_KNOWLEDGE_BASE.md](docs/BUILD_YOUR_OWN_KNOWLEDGE_BASE.md)。
 
 ---
 
