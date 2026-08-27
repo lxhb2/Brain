@@ -251,7 +251,7 @@ npm install && npm run dev
 - 数据库每日 02:30 自动备份到 `data/backups/`
 - 手动备份：`./scripts/backup.sh`
 - 不要把数据放在 `/mnt/c` 或 `/mnt/f` 等 Windows 挂载路径上（性能差且权限不稳定）
-- Windows 登录时会自动执行 `scripts/ensure-brain-mount.ps1` 检查 Docker 挂载是否脱离真实数据目录；发现异常会自动重建容器并等待健康检查，避免笔记“刷新后消失”
+- Windows 登录启动脚本会先启动 Docker Desktop，再执行 `scripts/ensure-brain-mount.ps1` 探测固定 WSL 数据目录；发现异常会自动重建容器并等待健康检查。前端在自检完成前显示“正在打开你的知识库”，不会把加载失败误报为“暂无笔记”。
 
 完整运维说明见 [docs/OPERATIONS.md](docs/OPERATIONS.md)，从零搭建教程见
 [docs/BUILD_YOUR_OWN_KNOWLEDGE_BASE.md](docs/BUILD_YOUR_OWN_KNOWLEDGE_BASE.md)。

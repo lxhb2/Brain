@@ -16,6 +16,7 @@ const STATUS_TABS: { value: NoteStatus | ''; label: string }[] = [
 export default function Notes() {
   const [data, setData] = useState<NotesListResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [status, setStatus] = useState<NoteStatus | ''>('')
   const [device, setDevice] = useState('')
@@ -24,7 +25,11 @@ export default function Notes() {
     setLoading(true)
     api
       .listNotes({ q, status: status || undefined, device: device || undefined, limit: 60, offset: 0 })
-      .then(setData)
+      .then((nextData) => {
+        setData(nextData)
+        setError(null)
+      })
+      .catch(() => setError('笔记列表加载失败，后端可能正在重启'))
       .finally(() => setLoading(false))
   }, [q, status, device])
 
@@ -104,10 +109,20 @@ export default function Notes() {
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center text-dust">
             <NotebookPen className="h-10 w-10 opacity-40" strokeWidth={1} />
-            <div className="font-display text-lg text-starlight/70">暂无笔记</div>
-            <p className="max-w-xs text-sm">
-              将笔记文件放入 <code className="rounded bg-white/5 px-1 font-mono text-xs">synced_notes/</code> 目录，等待自动入库。
-            </p>
+            {error ? (
+              <>
+                <div className="font-display text-lg text-amber">暂时无法读取笔记</div>
+                <p className="max-w-sm text-sm">这不是数据丢失。请稍等几秒或点击下方按钮重试。</p>
+                <button onClick={fetchNotes} className="chip chip-active">重新读取</button>
+              </>
+            ) : (
+              <>
+                <div className="font-display text-lg text-starlight/70">暂无笔记</div>
+                <p className="max-w-xs text-sm">
+                  将笔记文件放入 <code className="rounded bg-white/5 px-1 font-mono text-xs">synced_notes/</code> 目录，等待自动入库。
+                </p>
+              </>
+            )}
           </div>
         )}
       </div>

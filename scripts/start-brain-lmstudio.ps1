@@ -1,5 +1,17 @@
 $ErrorActionPreference = "Continue"
 
+# Ensure the virtualized server stack is actually running before repairing mounts.
+if (-not (Get-Process "Docker Desktop" -ErrorAction SilentlyContinue)) {
+    $dockerDesktop = Join-Path $env:ProgramFiles "Docker\Docker\Docker Desktop.exe"
+    if (-not (Test-Path -LiteralPath $dockerDesktop)) {
+        Write-Warning "Docker Desktop was not found at: $dockerDesktop"
+    } else {
+        Write-Host "Starting Docker Desktop..."
+        Start-Process -FilePath $dockerDesktop -WindowStyle Hidden
+        Start-Sleep -Seconds 5
+    }
+}
+
 # Docker Desktop/WSL restarts can occasionally detach bind mounts. Repair that
 # before models are loaded so existing notes and cloud files remain visible.
 $ensureMount = Join-Path $PSScriptRoot "ensure-brain-mount.ps1"

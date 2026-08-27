@@ -497,6 +497,48 @@ def create_database_backup(*, keep: int = 14) -> Dict[str, Any]:
     }
 
 
+def create_prestart_backup(*, keep: int = 7) -> Optional[Dict[str, Any]]:
+    """Snapshot the existing DB before migrations or a new process touches it.
+
+    This protects the last known state from being merged into an unexpected
+    database location during a WSL/Docker restart.
+    """
+    cfg = get_config()
+    db_path = Path(cfg.DB_PATH)
+    if not (db_path.exists() or Path(str(db_path) + "-wal").exists()):
+        return None
+
+    backup_dir = db_path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    file_name = f"brain_prestart_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    backup_path = backup_dir / file_name
+
+    with _db_lock, get_conn() as src:
+        dst_conn = sqlite3.connect(backup_path)
+        try:
+            src.backup(dst_conn)
+        finally:
+            dst_conn.close()
+        src.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+
+    backups = sorted(backup_dir.glob("brain_prestart_*.db"), key=lambda p: p.name, reverse=True)
+    for old_path in backups[keep:]:
+        old_path.unlink(missing_ok=True)
+    size = backup_path.stat().st_size
+    insert_activity(
+        event_type="backup",
+        message=f"启动前安全备份完成：{file_name}",
+        file_name=file_name,
+    )
+    return {"path": str(backup_path), "file_name": file_name, "size_bytes": size}
+
+
+def count_notes() -> int:
+    """Return the note count from the currently mounted database."""
+    with get_conn() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0])
+
+
 # ---------------------------------------------------------------------------
 # notes CRUD
 # ---------------------------------------------------------------------------

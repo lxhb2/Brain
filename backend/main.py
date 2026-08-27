@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from config import get_config
-from database import init_db, reset_stale_processing_notes
+from database import create_prestart_backup, init_db, reset_stale_processing_notes
 from routes import feedback as feedback_routes
 from routes import graph as graph_routes
 from routes import notes as notes_routes
@@ -80,6 +80,17 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 async def lifespan(app: FastAPI):
     """应用生命周期：启动后台服务 + 优雅关闭。"""
     logger.info("Brain 启动中...")
+    try:
+        prestart_backup = create_prestart_backup()
+        if prestart_backup:
+            logger.info(
+                "启动前安全备份: %s (%s bytes)",
+                prestart_backup["path"],
+                prestart_backup["size_bytes"],
+            )
+    except Exception as e:
+        logger.exception("启动前安全备份失败: %s", e)
+
     init_db()
 
     # 崩溃恢复：把上次崩溃时 status='processing' 的笔记重置为 pending

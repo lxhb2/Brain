@@ -4,7 +4,6 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 import database
-from config import get_config
 
 router = APIRouter(prefix="/api", tags=["stats"])
 
@@ -15,14 +14,3 @@ def stats():
     return database.get_stats()
 
 
-@router.get("/health")
-def health():
-    """健康检查。"""
-    cfg = get_config()
-    return {
-        "status": "ok",
-        "openai_configured": bool(cfg.OPENAI_API_KEY),
-        "llm_model": cfg.LLM_MODEL,
-        "qa_model": cfg.QA_MODEL,
-        "embedding_model": cfg.EMBEDDING_MODEL,
-    }

@@ -445,9 +445,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass ^
 
 ### 上传的笔记看不到
 
-如果打开 Brain 后笔记像被清空了，先不要重建数据。最常见原因是 Docker Desktop/WSL 重启后绑定挂载偶发脱离：真实文件仍在 WSL 数据目录中，但容器暂时看到了空目录。
+如果打开 Brain 后笔记像被清空了，先不要重建数据。最常见原因只有两种：backend 还没启动完成，或 Docker Desktop/WSL 重启后绑定挂载暂时脱离。真实文件仍在 WSL 数据目录中，旧版前端会把接口加载失败误显示成“暂无笔记”。
 
-Windows 登录启动脚本现在会自动写入探针文件并从 `brain-backend` 容器读取；发现不一致时自动执行修复命令。也可以手动运行：
+新版前端会等待 `/api/health` 的数据目录自检；未通过时显示“正在打开你的知识库”，不会进入空列表。健康响应中包含：
+
+```json
+{
+  "data_mount": {
+    "verified": true,
+    "note_count": 5,
+    "db_size_bytes": 225280,
+    "ready": true
+  }
+}
+```
+
+backend 每次启动前会先把当前 SQLite（含 WAL 中已提交事务）备份到 `data/backups/brain_prestart_*.db`，并保留最近 7 份；随后再做 checkpoint 和建表迁移。
+
+Windows 登录启动脚本 `scripts/start-brain-lmstudio.ps1` 现在会先启动 Docker Desktop，再写入探针文件并从 `brain-backend` 容器读取；发现不一致时自动执行修复命令。也可以手动运行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass ^

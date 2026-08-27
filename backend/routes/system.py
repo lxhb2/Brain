@@ -76,8 +76,10 @@ def health() -> Dict[str, Any]:
         components["worker"] = "unknown"
 
     # DB
+    note_count = 0
+    db_size_bytes = 0
     try:
-        database.get_stats()
+        note_count = int(database.count_notes())
         components["db"] = "ok"
     except Exception:
         components["db"] = "error"
@@ -86,14 +88,32 @@ def health() -> Dict[str, Any]:
     components["llm"] = "ok" if cfg.OPENAI_API_KEY else "unconfigured"
 
     degraded = any(v in ("error", "stopped") for v in components.values())
+    db_dir = os.path.abspath(os.path.dirname(cfg.DB_PATH))
+    mount_probe = os.path.join(db_dir, ".brain-mount-probe")
+    mount_verified = os.path.isfile(mount_probe)
+    if components["db"] == "ok" and mount_verified:
+        status_value = "ok"
+    else:
+        status_value = "degraded"
+    try:
+        db_size_bytes = os.path.getsize(cfg.DB_PATH)
+    except OSError:
+        pass
     return {
-        "status": "degraded" if degraded else "ok",
+        "status": status_value,
         "components": components,
         "openai_configured": bool(cfg.OPENAI_API_KEY),
         "baidu_ocr_enabled": bool(cfg.BAIDU_OCR_ENABLED and cfg.BAIDU_OCR_API_KEY and cfg.BAIDU_OCR_SECRET_KEY),
         "llm_model": model_cfg.get("llm_model", cfg.LLM_MODEL),
         "qa_model": model_cfg.get("qa_model", cfg.QA_MODEL),
         "embedding_model": model_cfg.get("embedding_model", cfg.EMBEDDING_MODEL),
+        "data_mount": {
+            "verified": mount_verified,
+            "probe_path": "/app/data/.brain-mount-probe",
+            "note_count": note_count,
+            "db_size_bytes": db_size_bytes,
+            "ready": status_value == "ok",
+        },
 }
 
 

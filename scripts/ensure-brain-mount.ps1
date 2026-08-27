@@ -14,7 +14,7 @@ function Invoke-Wsl {
 }
 
 function Wait-BrainHealth {
-    for ($i = 0; $i -lt 30; $i++) {
+    for ($i = 0; $i -lt 45; $i++) {
         try {
             Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/health" -TimeoutSec 2 | Out-Null
             return $true
@@ -45,10 +45,10 @@ function Repair-DataContainers {
     return $LASTEXITCODE
 }
 
-# Docker Desktop may still be starting when this runs at logon. Give the daemon
-# a short window before deciding that a mount is detached.
+# Docker Desktop may still be starting when this runs at logon. Allow up to
+# three minutes before deciding that the daemon cannot become ready.
 $dockerReady = $false
-for ($i = 0; $i -lt 30; $i++) {
+for ($i = 0; $i -lt 90; $i++) {
     & wsl.exe -d $DistroName -- docker info 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         $dockerReady = $true

@@ -221,6 +221,12 @@ export interface Health {
   openai_configured: boolean
   llm_model: string
   embedding_model: string
+  data_mount?: {
+    verified: boolean
+    note_count: number
+    db_size_bytes: number
+    ready: boolean
+  }
 }
 
 // ---------- 设置与系统 ----------

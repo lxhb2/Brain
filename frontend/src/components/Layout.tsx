@@ -105,12 +105,37 @@ function MobileStatBar() {
 }
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { refresh } = useAppStore()
+  const { stats, health, error, refresh } = useAppStore()
   const location = useLocation()
+
+  const backendReady = Boolean(
+    stats && (!health?.data_mount || health.data_mount.ready),
+  )
 
   useEffect(() => {
     refresh()
   }, [location.pathname, refresh])
+
+  useEffect(() => {
+    if (backendReady) return
+    const timer = window.setInterval(refresh, 2000)
+    return () => window.clearInterval(timer)
+  }, [backendReady, refresh])
+
+  if (!backendReady) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-void-300/40 px-6 text-center">
+        <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/10 border-t-flux" />
+        <div className="font-display text-xl text-starlight">正在打开你的知识库</div>
+        <p className="max-w-md text-sm text-dust">
+          Brain 正在检查 WSL 数据目录和数据库。笔记不会因此丢失，服务就绪后会自动进入主界面。
+        </p>
+        <div className="rounded-lg border border-white/10 bg-void-500/30 px-3 py-2 font-mono text-xs text-dust">
+          {error || '等待后端接口返回数据...'}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-full w-full flex-col overflow-hidden md:flex-row">
