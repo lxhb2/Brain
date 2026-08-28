@@ -24,10 +24,17 @@ function resolveMarkdownImagePath(src: string | undefined, noteFilePath?: string
   if (/^(https?:|data:image|blob:)/i.test(raw) || raw.startsWith('/api/')) return raw
 
   let path = raw
+  try {
+    // react-markdown normalizes Markdown sources before components see them,
+    // so Chinese names can arrive percent-encoded. Avoid encoding it twice.
+    path = decodeURIComponent(path)
+  } catch {
+    path = raw
+  }
   if (!path.startsWith('/')) {
     const base = (noteFilePath || '').replace(/\\/g, '/')
     const directory = base.slice(0, Math.max(0, base.lastIndexOf('/')))
-    path = `${directory}/${raw}`
+    path = `${directory}/${path}`
   }
 
   const segments = path.split('/')
