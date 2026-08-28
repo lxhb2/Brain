@@ -45,7 +45,7 @@ def get_note_bundle(note_id: int):
     return FileResponse(
         archive_path,
         media_type="application/zip",
-        filename=f"{base_name}-markdown-bundle.zip",
+        filename=os.path.basename(archive_path),
     )
 
 
