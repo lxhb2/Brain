@@ -96,11 +96,14 @@ def get_note_file(note_id: int):
         ".markdown": "text/markdown; charset=utf-8",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }.get(ext, "application/octet-stream")
-    headers = {
-        # 允许浏览器内嵌展示（iframe / img），避免某些代理附加下载头
-        "Content-Disposition": f"inline; filename=\"{os.path.basename(file_path)}\""
-    }
-    return FileResponse(file_path, media_type=media_type, filename=os.path.basename(file_path), headers=headers)
+    # Starlette generates RFC 5987 headers for Unicode names; a hand-built
+    # Content-Disposition header would fail to encode Chinese filenames.
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=os.path.basename(file_path),
+        content_disposition_type="inline",
+    )
 
 
 @router.get("/{note_id}/thumbnail")

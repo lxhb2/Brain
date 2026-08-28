@@ -10,10 +10,11 @@ import { cn } from '@/lib/utils'
  * 根据文件扩展名渲染原始文件预览。
  * - PDF：iframe 内嵌
  * - 图片（png/jpg/jpeg）：img 标签
- * - 文本型（txt/md/markdown）：iframe 以 text/plain 展示，浏览器原生支持
+ * - Markdown：使用 MarkdownView 渲染标题、表格和内嵌图片
+ * - TXT：iframe 以 text/plain 展示
  * - Word（docx）：浏览器无法内嵌，显示下载按钮 + 提示
  */
-function _renderOriginalFile(note: Note) {
+function _renderOriginalFile(note: Note, markdownContent?: string) {
   const fp = (note.file_path || '').toLowerCase()
   const url = api.noteFileUrl(note.id)
   if (fp.endsWith('.pdf')) {
@@ -22,8 +23,21 @@ function _renderOriginalFile(note: Note) {
   if (fp.endsWith('.png') || fp.endsWith('.jpg') || fp.endsWith('.jpeg')) {
     return <img src={url} alt={note.title ?? ''} className="block w-full" />
   }
-  if (fp.endsWith('.txt') || fp.endsWith('.md') || fp.endsWith('.markdown')) {
-    // iframe 直接加载文本文件，浏览器以 text/plain 渲染
+  if (fp.endsWith('.md') || fp.endsWith('.markdown')) {
+    if (!markdownContent) {
+      return (
+        <div className="flex h-[40vh] items-center justify-center">
+          <div className="h-7 w-7 animate-spin rounded-full border-2 border-flux/20 border-t-flux" />
+        </div>
+      )
+    }
+    return (
+      <div className="min-h-[40vh] p-3 md:p-5">
+        <MarkdownView content={markdownContent} noteFilePath={note.file_path} />
+      </div>
+    )
+  }
+  if (fp.endsWith('.txt')) {
     return (
       <iframe
         src={url}
@@ -90,6 +104,31 @@ export default function NoteDetail() {
   const [editKeywords, setEditKeywords] = useState('') // 逗号分隔
   const [editPreview, setEditPreview] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [rawMarkdown, setRawMarkdown] = useState('')
+
+  const isMarkdownNote = Boolean(
+    note?.file_path &&
+      (note.file_path.toLowerCase().endsWith('.md') ||
+        note.file_path.toLowerCase().endsWith('.markdown')),
+  )
+
+  useEffect(() => {
+    if (!note || !isMarkdownNote) return
+    let cancelled = false
+    setRawMarkdown('')
+    const loadRawMarkdown = async () => {
+      const res = await fetch(api.noteFileUrl(note.id))
+      if (!res.ok) throw new Error(`加载原始 Markdown 失败：${res.status}`)
+      const text = await res.text()
+      if (!cancelled) setRawMarkdown(text)
+    }
+    loadRawMarkdown().catch(() => {
+      if (!cancelled) setRawMarkdown('')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [note?.id, isMarkdownNote])
 
   useEffect(() => {
     if (!id) return
@@ -380,7 +419,7 @@ export default function NoteDetail() {
           </div>
           <div className="flex-1 overflow-auto bg-void-500/30 p-3 md:p-6">
             <div className="mx-auto overflow-hidden rounded-lg border border-white/10 bg-void-300 shadow-panel">
-              {_renderOriginalFile(note)}
+              {_renderOriginalFile(note, rawMarkdown)}
             </div>
           </div>
         </div>
