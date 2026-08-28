@@ -61,8 +61,14 @@ class Settings(BaseSettings):
     # —— 链接权重计算参数 ——
     LINK_ALPHA: float = 0.6   # 语义相似度权重
     LINK_BETA: float = 0.3    # 关键词 Jaccard 权重
-    LINK_GAMMA: float = 0.1   # 时间衰减权重
+    LINK_GAMMA: float = 0.1   # 内容词重合权重（不再使用时间衰减建边）
     LINK_WEIGHT_THRESHOLD: float = 0.35
+    # Obsidian 式“强证据才连边”的门槛；不满足任一门槛时不建边。
+    LINK_SEMANTIC_GATE: float = 0.75
+    LINK_KEYWORD_GATE: float = 0.25
+    LINK_CONTENT_GATE: float = 0.18
+    LINK_MIN_SHARED_TERMS: int = 2
+    LINK_TOP_K: int = 4
 
     # —— 监听目录：路径 -> {device, app} 元数据 ——
     # 默认为 SYNCED_NOTES_ROOT 下的若干子目录

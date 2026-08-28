@@ -474,7 +474,7 @@ function LinkParamsEditor({
   const fields: [keyof AllSettings['link_params'], string, string][] = [
     ['alpha', 'α 语义相似', '0.6'],
     ['beta', 'β 关键词重合', '0.3'],
-    ['gamma', 'γ 时间衰减', '0.1'],
+    ['gamma', 'γ 内容重合', '0.1'],
     ['threshold', '入图阈值', '0.35'],
   ]
   return (

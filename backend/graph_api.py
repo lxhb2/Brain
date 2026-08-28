@@ -8,22 +8,11 @@
 """
 from __future__ import annotations
 
-import math
-from datetime import datetime
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 import database
-from config import get_config
-
-
-def _parse_dt(ts: Optional[str]) -> Optional[datetime]:
-    """把 ISO 字符串解析为 datetime（含时区），失败返回 None。"""
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
+from config import get_config, get_link_params_runtime
 
 
 def _jaccard(a: Sequence[str], b: Sequence[str]) -> float:
@@ -37,81 +26,150 @@ def _jaccard(a: Sequence[str], b: Sequence[str]) -> float:
     return len(inter) / len(union) if union else 0.0
 
 
-def _temporal_decay(days_delta: float) -> float:
-    """时间衰减：exp(-|Δt|/30)。"""
-    try:
-        return math.exp(-abs(float(days_delta)) / 30.0)
-    except (TypeError, ValueError):
-        return 0.0
+_WORD_RE = re.compile(r"[a-z][a-z0-9]+", re.IGNORECASE)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
+_CONTENT_STOP = {
+    "可以", "使用", "内容", "总结", "笔记", "文档", "知识", "信息", "系统",
+    "学习", "方法", "过程", "结果", "需要", "重要", "帮助", "工作", "记录",
+    "的", "是", "在", "和", "与", "了", "我", "你", "他", "这", "那", "个",
+    "一个", "一下", "一些", "一次", "一条", "一步", "自己", "他们", "我们",
+    "你们", "什么", "怎么", "为什么", "因为", "所以", "如果", "但是", "可是",
+    "然后", "另外", "其次", "其他", "其它", "还有", "以及", "并且", "不过",
+    "只是", "就是", "也是", "都是", "或者", "而且", "不要", "不会", "不是",
+    "没有", "可能", "应该", "必须", "关键", "基本", "一般", "常见", "简单",
+    "例如", "比如", "问题", "部分", "步骤", "例子", "文章", "手册",
+    "个人", "之前", "之后", "后来", "时候", "开始", "现在", "同时",
+    "此外", "如何", "决定",
+}
+_CJK_STOP_CHARS = set("的了是在和与了我你这那个")
 
 
-def _compose_link_type(sim: float, jac: float, decay: float) -> str:
-    """根据三个分量主导来源决定链接类型。"""
-    contrib = {"semantic": sim, "keyword": jac, "temporal": decay}
+def _text_tokens(text: str) -> set[str]:
+    """构造轻量内容词：英文单词 + 中文相邻二字组。"""
+    tokens = {token.lower() for token in _WORD_RE.findall(text or "")}
+    for segment in _CJK_RE.findall(text or ""):
+        if len(segment) >= 2:
+            tokens.update(segment[i : i + 2] for i in range(len(segment) - 1))
+    return {
+        token for token in tokens
+        if token not in _CONTENT_STOP and not any(ch in _CJK_STOP_CHARS for ch in token)
+    }
+
+
+def _content_tokens(note: Dict[str, Any]) -> set[str]:
+    """从标题、摘要、关键词和 OCR 前段中提取可比较的内容证据。"""
+    tokens: set[str] = set()
+    for keyword in note.get("keywords") or []:
+        token = str(keyword).strip().lower()
+        if (
+            token
+            and not token.isdigit()
+            and (len(token) > 1 or any("\u4e00" <= ch <= "\u9fff" for ch in token))
+            and not any(ch in _CJK_STOP_CHARS for ch in token)
+        ):
+            tokens.add(token)
+    fields = (
+        note.get("title"),
+        note.get("summary"),
+        note.get("condition_text"),
+        note.get("action_text"),
+        note.get("consequence_text"),
+        (note.get("ocr_text") or "")[:2000],
+    )
+    tokens.update(_text_tokens(" ".join(str(value or "") for value in fields)))
+    return tokens
+
+
+def _content_overlap(a: set[str], b: set[str]) -> tuple[float, List[str]]:
+    """返回内容词重合比例与少量共享证据，比例使用 Dice 防止长文稀释。"""
+    shared = a & b
+    if not a or not b or not shared:
+        return 0.0, []
+    ratio = 2.0 * len(shared) / (len(a) + len(b))
+    examples = sorted(shared, key=lambda token: (len(token), token))[:4]
+    return ratio, examples
+
+
+def _compose_link_type(sim: float, jac: float, overlap: float) -> str:
+    """根据内容证据的主导来源决定链接类型。"""
+    contrib = {"semantic": sim, "keyword": max(jac, overlap)}
     return max(contrib, key=contrib.get)
 
 
 def recompute_links_for_note(note_id: int) -> int:
-    """重算某条笔记与全库其他 done 笔记的候选链接。
+    """重算某条笔记与全库其他 done 笔记的内容相关链接。
 
-    流程：
-      1. 删除该笔记参与的旧链接
-      2. 取本笔记 embedding/keywords/created_at
-      3. 与其他每条 done 笔记计算 weight = α·cos + β·jaccard + γ·decay
-      4. weight > 阈值则入库
-
-    返回新增/更新的链接数。
+    参考 Obsidian：只有“强内容证据”才连边，不靠时间邻近或微弱相似度
+    把图连成网。候选边必须通过语义/关键词/内容词门槛之一，然后只保留
+    当前节点最相关的前 K 条。
     """
     cfg = get_config()
+    params = get_link_params_runtime()
     target = database.get_note(note_id)
     if not target or target.get("status") != "done":
         return 0
 
     target_emb = target.get("embedding") or []
-    target_kw = target.get("keywords") or []
-    target_t = _parse_dt(target.get("created_at"))
+    target_kw = {str(x).strip().lower() for x in (target.get("keywords") or []) if str(x).strip()}
+    target_content = _content_tokens(target)
 
     # 清旧
     database.delete_links_for_note(note_id)
 
     others = [n for n in database.get_done_notes_with_embeddings() if n["id"] != note_id]
-    count = 0
+    candidates: List[Dict[str, Any]] = []
     for other in others:
         sim = database.cosine_similarity(target_emb, other.get("embedding") or [])
-        jac = _jaccard(target_kw, other.get("keywords") or [])
+        other_kw = {str(x).strip().lower() for x in (other.get("keywords") or []) if str(x).strip()}
+        jac = _jaccard(target_kw, other_kw)
+        overlap, shared_examples = _content_overlap(target_content, _content_tokens(other))
+        shared_keywords = sorted(target_kw & other_kw)
+        shared_terms = len(shared_keywords) + len(shared_examples)
 
-        other_t = _parse_dt(other.get("created_at"))
-        if target_t and other_t:
-            delta_days = (target_t - other_t).total_seconds() / 86400.0
-            decay = _temporal_decay(delta_days)
-        else:
-            decay = 0.0
+        semantic_pass = sim >= cfg.LINK_SEMANTIC_GATE
+        keyword_pass = jac >= cfg.LINK_KEYWORD_GATE and shared_terms >= cfg.LINK_MIN_SHARED_TERMS
+        content_pass = overlap >= cfg.LINK_CONTENT_GATE and shared_terms >= cfg.LINK_MIN_SHARED_TERMS
+        if not (semantic_pass or keyword_pass or content_pass):
+            continue
 
-        weight = cfg.LINK_ALPHA * sim + cfg.LINK_BETA * jac + cfg.LINK_GAMMA * decay
-        if weight <= cfg.LINK_WEIGHT_THRESHOLD:
+        weight = params["alpha"] * sim + params["beta"] * jac + params["gamma"] * overlap
+        if weight <= params["threshold"]:
             continue
 
         link_type = _compose_link_type(
-            cfg.LINK_ALPHA * sim,
-            cfg.LINK_BETA * jac,
-            cfg.LINK_GAMMA * decay,
+            sim,
+            jac,
+            overlap,
         )
         parts: List[str] = []
         if sim > 0:
             parts.append(f"语义相似度 {sim:.2f}")
         if jac > 0:
             parts.append(f"关键词重合 {jac:.2f}")
-        if decay > 0:
-            parts.append(f"时间邻近 {decay:.2f}")
-        reason = "；".join(parts) if parts else "综合关联"
+        if shared_examples:
+            parts.append("共享内容词 " + "、".join(shared_examples))
+        if shared_keywords:
+            parts.append("共享关键词 " + "、".join(shared_keywords[:4]))
+        reason = "；".join(parts) if parts else "内容相关"
 
-        a, b = (note_id, other["id"]) if note_id < other["id"] else (other["id"], note_id)
+        candidates.append({
+            "other_id": other["id"],
+            "weight": max(0.0, min(1.0, float(weight))),
+            "link_type": link_type,
+            "reason": reason,
+        })
+
+    candidates.sort(key=lambda item: item["weight"], reverse=True)
+    count = 0
+    for item in candidates[: max(1, int(cfg.LINK_TOP_K))]:
+        other_id = item.pop("other_id")
+        a, b = (note_id, other_id) if note_id < other_id else (other_id, note_id)
         database.insert_link(
             source_note_id=a,
             target_note_id=b,
-            weight=float(weight),
-            link_type=link_type,
-            reason=reason,
+            weight=item["weight"],
+            link_type=item["link_type"],
+            reason=item["reason"],
         )
         count += 1
     return count

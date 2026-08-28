@@ -24,8 +24,6 @@ venv/
 # Node / 前端构建缓存
 **/node_modules/
 **/.vite/
-frontend/dist/
-
 # 环境变量（含密钥，不应打进镜像）
 .env
 .env.*

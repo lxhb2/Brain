@@ -24,7 +24,6 @@ import { cn } from '@/lib/utils'
 const EDGE_COLOR: Record<string, string> = {
   semantic: '#22D3EE',
   keyword: '#6EA8FE',
-  temporal: '#F5A623',
 }
 
 function GraphCanvas() {
@@ -274,7 +273,7 @@ function GraphCanvas() {
             {Object.entries(EDGE_COLOR).map(([k, v]) => (
               <span key={k} className="flex items-center gap-1 font-mono text-[10px] text-starlight/70 md:text-[11px]">
                 <span className="h-0.5 w-3 rounded-full md:w-4" style={{ background: v }} />
-                {k === 'semantic' ? '语义' : k === 'keyword' ? '关键词' : '时间'}
+              {k === 'semantic' ? '语义' : '关键词/内容'}
               </span>
             ))}
           </div>
