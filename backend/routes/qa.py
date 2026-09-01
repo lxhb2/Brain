@@ -57,6 +57,7 @@ class ResearchRequest(BaseModel):
     qa_id: int
     mode: str = "verify"
     statement: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @router.post("/research")
@@ -74,6 +75,8 @@ def research(req: ResearchRequest):
             question=qa.get("question"),
             answer=str(qa.get("answer") or ""),
             citations=qa.get("citations") or [],
+            qa_id=req.qa_id,
+            session_id=req.session_id or qa.get("session_id"),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

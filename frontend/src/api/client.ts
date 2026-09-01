@@ -138,10 +138,14 @@ export interface WebSource {
 export interface QaResearchResponse {
   mode: 'verify' | 'debate'
   statement: string
+  keywords?: string[]
+  debate_recommended?: boolean
   report: string
   sources: WebSource[]
   web_evidence_count: number
+  history_used_count?: number
   search_note?: string | null
+  card_draft?: CardDraft | null
 }
 
 export interface QaSession {
@@ -535,8 +539,12 @@ export const api = {
     postJSON<QaAskResponse>('/api/qa/ask', { question, session_id: sessionId }),
   createCardDraft: (qa_id: number) =>
     postJSON<{ card_draft: CardDraft }>('/api/qa/card-draft', { qa_id }),
-  research: (qa_id: number, mode: 'verify' | 'debate') =>
-    postJSON<QaResearchResponse>('/api/qa/research', { qa_id, mode }),
+  research: (qa_id: number, mode: 'verify' | 'debate', sessionId?: string) =>
+    postJSON<QaResearchResponse>('/api/qa/research', {
+      qa_id,
+      mode,
+      session_id: sessionId,
+    }),
   getQaHistory: (limit = 50, offset = 0, sessionId?: string) => {
     const qs = new URLSearchParams()
     qs.set('limit', String(limit))

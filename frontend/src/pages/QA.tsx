@@ -298,10 +298,13 @@ export default function QA() {
     if (researchLoadingId) return
     setResearchLoadingId(qaId)
     try {
-      const res = await api.research(qaId, mode)
+      const res = await api.research(qaId, mode, sessionId)
       setMessages((m) => m.map((msg) => (
-        msg.qa_id === qaId ? { ...msg, research: res } : msg
+        msg.qa_id === qaId ? { ...msg, research: res, card_draft: res.card_draft ?? msg.card_draft } : msg
       )))
+      if (mode === 'debate' && res.card_draft) {
+        loadSavedCards()
+      }
     } catch (e) {
       alert(`${mode === 'verify' ? '验证' : '辩论'}报告生成失败：${e instanceof Error ? e.message : '未知错误'}`)
     } finally {
@@ -707,6 +710,26 @@ export default function QA() {
                             <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-dust">
                               {msg.research.web_evidence_count} 条网络证据
                             </span>
+                            {typeof msg.research.history_used_count === 'number' && (
+                              <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-dust">
+                                参考 {msg.research.history_used_count} 轮历史
+                              </span>
+                            )}
+                            {msg.research.keywords && msg.research.keywords.length > 0 && (
+                              <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-dust/80">
+                                {msg.research.keywords.slice(0, 3).join(' · ')}
+                              </span>
+                            )}
+                            {msg.research.debate_recommended && (
+                              <span className="rounded bg-amber/10 px-1.5 py-0.5 text-[10px] text-amber/90">
+                                建议辩论
+                              </span>
+                            )}
+                            {msg.research.mode === 'debate' && msg.card_draft && (
+                              <span className="rounded bg-flux/10 px-1.5 py-0.5 text-[10px] text-flux">
+                                卡片草稿已生成
+                              </span>
+                            )}
                             {msg.research.search_note && (
                               <span className="text-[10px] text-rose/80">搜索可能不完整</span>
                             )}

@@ -1144,6 +1144,11 @@ def get_qa_history(limit: int = 50, offset: int = 0,
                     d["citations"] = json.loads(d["citations"])
                 except (json.JSONDecodeError, TypeError):
                     d["citations"] = []
+            if isinstance(d.get("card_draft"), str):
+                try:
+                    d["card_draft"] = json.loads(d["card_draft"])
+                except (json.JSONDecodeError, TypeError):
+                    d["card_draft"] = None
             out.append(d)
         return out
 
@@ -2080,4 +2085,3 @@ def get_all_card_links() -> List[Dict[str, Any]]:
             "SELECT * FROM card_links ORDER BY weight DESC;"
         ).fetchall()
     return [dict(r) for r in rows]
-
