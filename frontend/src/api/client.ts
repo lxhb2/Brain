@@ -128,6 +128,22 @@ export interface ToolCall {
   result_preview: string
 }
 
+export interface WebSource {
+  title: string
+  url: string
+  snippet: string
+  query: string
+}
+
+export interface QaResearchResponse {
+  mode: 'verify' | 'debate'
+  statement: string
+  report: string
+  sources: WebSource[]
+  web_evidence_count: number
+  search_note?: string | null
+}
+
 export interface QaSession {
   session_id: string
   title: string | null
@@ -519,6 +535,8 @@ export const api = {
     postJSON<QaAskResponse>('/api/qa/ask', { question, session_id: sessionId }),
   createCardDraft: (qa_id: number) =>
     postJSON<{ card_draft: CardDraft }>('/api/qa/card-draft', { qa_id }),
+  research: (qa_id: number, mode: 'verify' | 'debate') =>
+    postJSON<QaResearchResponse>('/api/qa/research', { qa_id, mode }),
   getQaHistory: (limit = 50, offset = 0, sessionId?: string) => {
     const qs = new URLSearchParams()
     qs.set('limit', String(limit))

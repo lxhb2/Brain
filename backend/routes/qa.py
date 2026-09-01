@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 import database
 import qa_engine
+import web_research
 
 router = APIRouter(prefix="/api/qa", tags=["qa"])
 
@@ -48,6 +49,36 @@ def create_card_draft(req: CardDraftRequest):
     if not draft:
         raise HTTPException(502, "知识卡片草稿生成失败，请稍后重试")
     return {"card_draft": draft}
+
+
+class ResearchRequest(BaseModel):
+    """基于已有回答或自定义观点生成验证 / 辩论报告。"""
+
+    qa_id: int
+    mode: str = "verify"
+    statement: Optional[str] = None
+
+
+@router.post("/research")
+def research(req: ResearchRequest):
+    """生成临时联网验证报告。结果不会写入笔记库。"""
+    if req.mode not in ("verify", "debate"):
+        raise HTTPException(400, "mode 必须是 verify 或 debate")
+    qa = database.get_qa(req.qa_id)
+    if not qa:
+        raise HTTPException(404, "问答记录不存在")
+    try:
+        return web_research.research(
+            mode=req.mode,
+            statement=req.statement,
+            question=qa.get("question"),
+            answer=str(qa.get("answer") or ""),
+            citations=qa.get("citations") or [],
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"联网报告生成失败：{exc}")
 
 
 @router.get("/history")

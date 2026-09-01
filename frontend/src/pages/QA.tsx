@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Send, ThumbsUp, ThumbsDown, Loader2, Sparkles, FileText, Check, X, Brain, Plus, Trash2, ChevronRight, MessageSquare, Pencil, Wrench, Layers, Save } from 'lucide-react'
-import { api, type QaAskResponse, type Citation, type UserMemory, type QaSession, type ToolCall, type CardDraft, type FinalizeCardResponse, type KnowledgeCard } from '@/api/client'
+import { Send, ThumbsUp, ThumbsDown, Loader2, Sparkles, FileText, Check, X, Brain, Plus, Trash2, ChevronRight, MessageSquare, Pencil, Wrench, Layers, Save, ShieldCheck, Scale } from 'lucide-react'
+import { api, type QaAskResponse, type Citation, type UserMemory, type QaSession, type ToolCall, type CardDraft, type FinalizeCardResponse, type KnowledgeCard, type QaResearchResponse } from '@/api/client'
 import { useAppStore } from '@/store'
 import { cn } from '@/lib/utils'
 import { MarkdownView } from '@/components/MarkdownView'
@@ -17,6 +17,7 @@ interface ChatMessage {
   cards_used?: KnowledgeCard[]
   card_draft?: CardDraft | null
   card_saved?: boolean
+  research?: QaResearchResponse | null
 }
 
 // 生成会话 ID
@@ -62,6 +63,7 @@ export default function QA() {
   const [cardResult, setCardResult] = useState<FinalizeCardResponse | null>(null)
   const [cardGeneratingId, setCardGeneratingId] = useState<number | null>(null)
   const [savedCards, setSavedCards] = useState<Record<number, number>>({})
+  const [researchLoadingId, setResearchLoadingId] = useState<number | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const { refresh } = useAppStore()
 
@@ -290,6 +292,21 @@ export default function QA() {
     setCardUserAnswer('')
     setCardResult(null)
     setCardSubmitting(false)
+  }
+
+  const runResearch = async (qaId: number, mode: 'verify' | 'debate') => {
+    if (researchLoadingId) return
+    setResearchLoadingId(qaId)
+    try {
+      const res = await api.research(qaId, mode)
+      setMessages((m) => m.map((msg) => (
+        msg.qa_id === qaId ? { ...msg, research: res } : msg
+      )))
+    } catch (e) {
+      alert(`${mode === 'verify' ? '验证' : '辩论'}报告生成失败：${e instanceof Error ? e.message : '未知错误'}`)
+    } finally {
+      setResearchLoadingId(null)
+    }
   }
 
   // 提交卡片（带用户答案或跳过）
@@ -640,7 +657,23 @@ export default function QA() {
 
                       {/* 存为知识卡片按钮 */}
                       {msg.qa_id && (
-                        <div className="ml-1">
+                        <div className="ml-1 flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => runResearch(msg.qa_id!, 'verify')}
+                            disabled={researchLoadingId !== null}
+                            className="inline-flex items-center gap-1 rounded-full border border-azure/30 bg-azure/10 px-2.5 py-1 font-mono text-[10px] text-azure transition-colors hover:bg-azure/20"
+                          >
+                            <ShieldCheck className="h-3 w-3" />
+                            {researchLoadingId === msg.qa_id ? '联网验证中…' : '验证观点'}
+                          </button>
+                          <button
+                            onClick={() => runResearch(msg.qa_id!, 'debate')}
+                            disabled={researchLoadingId !== null}
+                            className="inline-flex items-center gap-1 rounded-full border border-amber/30 bg-amber/10 px-2.5 py-1 font-mono text-[10px] text-amber transition-colors hover:bg-amber/20"
+                          >
+                            <Scale className="h-3 w-3" />
+                            {researchLoadingId === msg.qa_id ? '联网辩论中…' : '辩论观点'}
+                          </button>
                           {savedCards[msg.qa_id] ? (
                             <span className="inline-flex items-center gap-1 rounded-full border border-flux/30 bg-flux/10 px-2.5 py-1 font-mono text-[10px] text-flux">
                               <Layers className="h-3 w-3" />
@@ -660,6 +693,39 @@ export default function QA() {
                               <Layers className="h-3 w-3" />
                               {msg.card_draft ? '存为知识卡片' : (cardGeneratingId === msg.qa_id ? '生成草稿中…' : '制作知识卡片')}
                             </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 联网验证 / 辩论报告 */}
+                      {msg.research && (
+                        <div className="ml-1 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-[10px] uppercase tracking-wider text-dust/60">
+                              {msg.research.mode === 'verify' ? '联网验证' : '联网辩论'}
+                            </span>
+                            <span className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-dust">
+                              {msg.research.web_evidence_count} 条网络证据
+                            </span>
+                            {msg.research.search_note && (
+                              <span className="text-[10px] text-rose/80">搜索可能不完整</span>
+                            )}
+                          </div>
+                          <MarkdownView content={msg.research.report} />
+                          {msg.research.sources.length > 0 && (
+                            <div className="mt-3 space-y-1.5 border-t border-white/5 pt-3">
+                              {msg.research.sources.map((source) => (
+                                <a
+                                  key={source.url}
+                                  href={source.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="block text-[11px] leading-relaxed text-dust hover:text-azure"
+                                >
+                                  {source.title}
+                                </a>
+                              ))}
+                            </div>
                           )}
                         </div>
                       )}
