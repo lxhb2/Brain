@@ -221,6 +221,13 @@ def init_db() -> None:
             logger.info("迁移：为 qa_history 表添加 session_id 列")
             c.execute("ALTER TABLE qa_history ADD COLUMN session_id TEXT;")
 
+        # —— qa_history 加 card_draft（持久化自动/手动生成的卡片草稿）——
+        try:
+            c.execute("SELECT card_draft FROM qa_history LIMIT 0;")
+        except sqlite3.OperationalError:
+            logger.info("迁移：为 qa_history 表添加 card_draft 列")
+            c.execute("ALTER TABLE qa_history ADD COLUMN card_draft TEXT;")
+
         # —— qa_sessions 表：会话元信息（id/title/创建时间/更新时间）——
         c.execute(
             """
@@ -1139,6 +1146,33 @@ def get_qa_history(limit: int = 50, offset: int = 0,
                     d["citations"] = []
             out.append(d)
         return out
+
+
+def get_qa(qa_id: int) -> Optional[Dict[str, Any]]:
+    """按 id 取一条问答记录。"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM qa_history WHERE id = ?;", (int(qa_id),)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    for field in ("citations", "card_draft"):
+        if isinstance(d.get(field), str):
+            try:
+                d[field] = json.loads(d[field])
+            except (json.JSONDecodeError, TypeError):
+                d[field] = [] if field == "citations" else None
+    return d
+
+
+def update_qa_card_draft(qa_id: int, draft: Optional[Dict[str, Any]]) -> bool:
+    """保存/清空一次问答对应的知识卡片草稿。"""
+    with _db_lock, get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE qa_history SET card_draft = ? WHERE id = ?;",
+            (json.dumps(draft, ensure_ascii=False) if draft else None, int(qa_id)),
+        )
+        return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

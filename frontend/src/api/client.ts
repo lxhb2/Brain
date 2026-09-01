@@ -160,6 +160,7 @@ export interface QaHistoryItem {
   question: string
   answer: string
   citations: Citation[]
+  card_draft?: CardDraft | null
   created_at: string
 }
 
@@ -516,6 +517,8 @@ export const api = {
   // 问答
   ask: (question: string, sessionId?: string) =>
     postJSON<QaAskResponse>('/api/qa/ask', { question, session_id: sessionId }),
+  createCardDraft: (qa_id: number) =>
+    postJSON<{ card_draft: CardDraft }>('/api/qa/card-draft', { qa_id }),
   getQaHistory: (limit = 50, offset = 0, sessionId?: string) => {
     const qs = new URLSearchParams()
     qs.set('limit', String(limit))

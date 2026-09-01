@@ -46,6 +46,31 @@ _SYSTEM_PROMPT = (
 _CITATION_RE = re.compile(r"\[(\d+)\]")
 _CARD_CITATION_RE = re.compile(r"\[(?:卡片|card)\s*#?\s*(\d+)\]")
 
+
+def _decode_model_json(raw: str) -> Optional[Dict[str, Any]]:
+    """解析模型返回的 JSON；容忍少量说明文字和代码围栏。"""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1:]
+        if s.endswith("```"):
+            s = s[:-3]
+        s = s.strip()
+
+    candidates = [s]
+    match = re.search(r"\{.*\}", s, re.DOTALL)
+    if match:
+        candidates.insert(0, match.group(0))
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            continue
+    return None
+
 # 多轮对话最多回溯几轮
 _MAX_HISTORY_TURNS = 5
 # 记忆检索 top k
@@ -123,9 +148,8 @@ def _generate_card_draft(
             if s.endswith("```"):
                 s = s[:-3]
             s = s.strip()
-        try:
-            data = json.loads(s)
-        except json.JSONDecodeError:
+        data = _decode_model_json(s)
+        if data is None:
             logger.warning("卡片草稿 JSON 解析失败: %s", s[:200])
             return None
         if data.get("skip"):
@@ -138,6 +162,59 @@ def _generate_card_draft(
     except Exception as e:
         logger.warning("生成卡片草稿失败: %s", e)
         return None
+
+
+def generate_card_draft_for_qa(qa_id: int) -> Optional[Dict[str, Any]]:
+    """为已有问答生成/取回知识卡片草稿。
+
+    这个入口给前端“手动制作卡片”使用；即使模型草稿生成失败，也会返回一个
+    可编辑的兜底草稿，确保用户始终能把回答沉淀下来。
+    """
+    qa = database.get_qa(qa_id)
+    if not qa:
+        raise ValueError("问答记录不存在")
+
+    existing = qa.get("card_draft")
+    if isinstance(existing, dict) and not existing.get("skip"):
+        return existing
+
+    citations = qa.get("citations") or []
+    question = str(qa.get("question") or "").strip()
+    answer = str(qa.get("answer") or "").strip()
+    draft = _generate_card_draft(question, answer, citations)
+    if draft and draft.get("skip"):
+        # 手动入口尊重用户意图；即使模型认为价值低，也退回到可编辑草稿。
+        draft = None
+
+    if draft is None:
+        paragraphs = [part.strip() for part in answer.splitlines() if part.strip()]
+        draft = {
+            "title": (question[:36] + "…") if len(question) > 36 else (question or "知识卡片"),
+            "core_summary": (paragraphs[0] if paragraphs else answer)[:800] or "暂无内容摘要。",
+            "key_conclusion": "\n".join(paragraphs[1:4]) or (paragraphs[0] if paragraphs else answer[:400]),
+            "application_scenario": "",
+            "agent_question": "如果在自己的实际学习或工作中使用这个结论，你会怎么做？",
+        }
+
+    source_note_ids = _cited_note_ids(answer)
+    if not source_note_ids:
+        source_note_ids = [c.get("note_id") for c in citations if c.get("note_id")]
+
+    card_draft = {
+        "title": str(draft.get("title") or question[:36] or "知识卡片").strip(),
+        "core_summary": str(draft.get("core_summary") or "").strip(),
+        "key_conclusion": str(draft.get("key_conclusion") or "").strip(),
+        "application_scenario": str(draft.get("application_scenario") or "").strip(),
+        "agent_question": str(draft.get("agent_question") or "").strip(),
+        "source_note_ids": source_note_ids,
+        "qa_id": int(qa_id),
+        "session_id": qa.get("session_id"),
+    }
+    if not card_draft["core_summary"] or not card_draft["key_conclusion"]:
+        raise ValueError("无法从问答中提取可保存的卡片内容")
+
+    database.update_qa_card_draft(qa_id, card_draft)
+    return card_draft
 
 # 工具定义（OpenAI tool calling 格式）
 _TOOLS = [
@@ -688,6 +765,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                     "qa_id": qa_id,
                     "session_id": session_id,
                 }
+                database.update_qa_card_draft(qa_id, card_draft)
                 database.insert_activity(
                     event_type="model",
                     message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id} 的知识卡片草稿「{card_draft.get('title', '')}」",

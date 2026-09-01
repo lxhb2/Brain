@@ -30,6 +30,26 @@ def ask(req: AskRequest):
     return qa_engine.ask(req.question, session_id=req.session_id)
 
 
+class CardDraftRequest(BaseModel):
+    """基于一条已有问答生成可编辑卡片草稿。"""
+
+    qa_id: int
+
+
+@router.post("/card-draft")
+def create_card_draft(req: CardDraftRequest):
+    """手动把任意一条 AI 回答转换成知识卡片草稿。"""
+    try:
+        draft = qa_engine.generate_card_draft_for_qa(req.qa_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"知识卡片草稿生成失败：{exc}")
+    if not draft:
+        raise HTTPException(502, "知识卡片草稿生成失败，请稍后重试")
+    return {"card_draft": draft}
+
+
 @router.get("/history")
 def history(
     limit: int = Query(50, ge=1, le=1000),
