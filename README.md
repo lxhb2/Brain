@@ -68,6 +68,19 @@ score = 0.70 * cosine_similarity(query, note)
 - 复用知识卡片时用 `[卡片id]` 引用，例如 `[卡片5]`，卡片复用次数和上次复用时间会自动更新
 - 多轮对话支持最近 5 轮历史上下文
 
+### AI 联网验证与辩论
+
+问答消息下方可以手动触发联网验证或辩论。验证会先理解当前会话最近 5 轮历史，提炼核心观点和关键词，再生成支持论据、反对论据和总结归纳；系统认为存在真实分歧时，会提示“建议辩论”。辩论由用户手动触发，输出支持方、反对方、交叉质询、裁判结论和可复用结论，并把结果转为可编辑的知识卡片草稿。
+
+为避免拖慢本地模型和抓取过多网页，联网研究有限制：
+
+- 历史上下文：最多 5 轮、2400 字符
+- 关键词：最多 5 个
+- 检索查询：最多 2 次
+- 每次查询结果：最多 3 条
+- 总证据：最多 6 条
+- 单次搜索超时：10 秒
+
 ### 知识图谱
 
 访问 `http://127.0.0.1:8080/graph`
@@ -178,6 +191,7 @@ SFTPGo 云盘上传   -------------> data/cloud/
 │   ├── ocr_processor.py    # OCR + 结构化 + embedding
 │   ├── bundle_builder.py   # Markdown 文字 + 图片整合包
 │   ├── qa_engine.py        # RAG 问答 + Agent 工具调用
+│   ├── web_research.py     # 联网验证、正反辩论和卡片草稿
 │   ├── graph_api.py        # 图谱构建与查询
 │   ├── feedback.py         # 反馈处理
 │   ├── growth.py           # 入库分诊 + 每日成长审核
@@ -267,6 +281,8 @@ npm install && npm run dev
 | GET | `/api/notes` | 笔记列表 |
 | GET | `/api/notes/{id}` | 笔记详情 |
 | POST | `/api/qa/ask` | RAG 问答 |
+| POST | `/api/qa/card-draft` | 把已有问答转为知识卡片草稿 |
+| POST | `/api/qa/research` | 联网验证或辩论，辩论会返回卡片草稿 |
 | GET | `/api/cards` | 知识卡片列表 |
 | GET | `/api/cards/{id}` | 卡片详情（含复用次数） |
 | GET | `/api/cards/due/review` | 到期复验卡片 |
