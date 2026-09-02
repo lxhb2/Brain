@@ -10,7 +10,7 @@
   5. 写库（含 ocr_model 字段）+ 生成缩略图
   6. 触发 graph_api.recompute_links_for_note
 
-当未配置 OPENAI_API_KEY 时进入 DEMO 模式：
+当对应 API 未配置时进入 DEMO 模式：
   - title 取文件名
   - ocr_text 写入提示语
   - keywords 为空
@@ -333,25 +333,29 @@ def generate_thumbnail(path: str, out_path: str, width: int = 200, quality: int 
 # ---------------------------------------------------------------------------
 # OpenAI 客户端
 # ---------------------------------------------------------------------------
-@lru_cache(maxsize=1)
-def _get_client():
-    """构造并缓存 OpenAI 客户端。未配置 key 时返回 None（进入 demo 模式）。
+@lru_cache(maxsize=4)
+def _get_client(kind: str = "llm"):
+    """构造并缓存 OCR / LLM / Embedding 专用 OpenAI 客户端。
 
-    使用 lru_cache 复用同一个客户端实例，避免每次调用都重新创建
-    （OpenAI SDK 内部维护 HTTP 连接池，复用客户端可大幅减少连接建立开销）。
+    每类 API 可使用不同 endpoint 和 key；未配置对应 key 时返回 None。
     """
-    cfg = get_config()
-    if not cfg.OPENAI_API_KEY:
+    api_cfg = settings_store.get_api_config(kind)
+    if not api_cfg["api_key"]:
         return None
     try:
         from openai import OpenAI
     except ImportError as e:  # pragma: no cover
         logger.error("openai SDK 未安装: %s", e)
         return None
-    kwargs: Dict[str, Any] = {"api_key": cfg.OPENAI_API_KEY, "max_retries": 0}
-    if cfg.OPENAI_BASE_URL:
-        kwargs["base_url"] = cfg.OPENAI_BASE_URL
+    kwargs: Dict[str, Any] = {"api_key": api_cfg["api_key"], "max_retries": 0}
+    if api_cfg["base_url"]:
+        kwargs["base_url"] = api_cfg["base_url"]
     return OpenAI(**kwargs)
+
+
+def clear_client_cache() -> None:
+    """设置页更新 API 配置后，让专用客户端立即重建。"""
+    _get_client.cache_clear()
 
 
 _STRUCTURED_JSON_SCHEMA = {
@@ -651,10 +655,11 @@ def _ocr_structured(client, images: List[str], model_id: Optional[str] = None, f
         # 回退到 env 默认
         cfg = get_config()
         try:
-            result = _call_vision_model(client, cfg.LLM_MODEL, images)
+            fallback_model = settings_store.get_runtime_model("ocr")
+            result = _call_vision_model(client, fallback_model, images)
             return result, None
         except Exception as e:
-            logger.warning("默认模型 %s 调用失败: %s", cfg.LLM_MODEL, e)
+            logger.warning("默认模型 %s 调用失败: %s", fallback_model, e)
             return {}, None
 
     last_err: Optional[Exception] = None
@@ -788,7 +793,7 @@ def _refine_baidu_text_with_llm(raw_text: str) -> Optional[Dict[str, Any]]:
             prompt = correction_hint + "\n\n" + prompt
 
         resp = client.chat.completions.create(
-            model=cfg.LLM_MODEL,
+            model=settings_store.get_runtime_model("llm"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=4000,
@@ -851,8 +856,8 @@ def _build_ocr_correction_hint() -> str:
 
 def _embed_text(client, text: str) -> List[float]:
     """调用 text-embedding-3-small 生成向量。"""
-    cfg = get_config()
-    resp = client.embeddings.create(model=cfg.EMBEDDING_MODEL, input=text)
+    model_id = settings_store.get_runtime_model("embedding")
+    resp = client.embeddings.create(model=model_id, input=text)
     return list(resp.data[0].embedding)
 
 
@@ -861,7 +866,7 @@ def _demo_structured(file_path: str) -> Dict[str, Any]:
     base = os.path.splitext(os.path.basename(file_path))[0]
     return {
         "title": base.replace("_", " ").replace("-", " ").strip() or "(未命名笔记)",
-        "ocr_text": "(demo 模式 — 设置 OPENAI_API_KEY 以启用真实 OCR)",
+        "ocr_text": "(demo 模式 — 配置 OCR API 后启用真实 OCR)",
         "summary": f"演示笔记：{base}",
         "keywords": [],
     }
@@ -912,13 +917,8 @@ def _structured_from_text(client, text: str, model_id: Optional[str] = None) -> 
     if not text or not text.strip():
         logger.warning("文本结构化：内容为空")
         return None
-    cfg = get_config()
-    # 选择模型：优先用指定的，否则用 LLM_MODEL（文本任务用通用模型即可）
-    if model_id and model_id != "baidu":
-        m = settings_store.get_ocr_model_by_id(model_id)
-        model_name = m["model"] if m else cfg.LLM_MODEL
-    else:
-        model_name = cfg.LLM_MODEL
+    # 文本结构化固定使用通用 LLM API；OCR 模型列表只用于视觉 OCR。
+    model_name = settings_store.get_runtime_model("llm")
     # 截断超长文本（避免 token 爆炸）
     max_chars = 24000
     truncated = text[:max_chars]
@@ -990,17 +990,16 @@ def _demo_embedding(seed: int = 42) -> List[float]:
 
 def _activity_model_name(model_id: Optional[str]) -> str:
     """返回适合展示的模型名；text-llm 表示文本任务使用的通用模型。"""
-    cfg = get_config()
     if model_id == "text-llm":
-        return cfg.LLM_MODEL
+        return settings_store.get_runtime_model("llm")
     if model_id and model_id not in ("baidu", "text-fallback"):
         model = settings_store.get_ocr_model_by_id(model_id)
         if model:
-            return model.get("name") or model.get("model") or cfg.LLM_MODEL
+            return model.get("name") or model.get("model") or settings_store.get_runtime_model("ocr")
     primary = settings_store.get_primary_ocr_model()
     if primary:
-        return primary.get("name") or primary.get("model") or cfg.LLM_MODEL
-    return cfg.LLM_MODEL
+        return primary.get("name") or primary.get("model") or settings_store.get_runtime_model("ocr")
+    return settings_store.get_runtime_model("ocr")
 
 
 # ---------------------------------------------------------------------------
@@ -1034,7 +1033,7 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
     if note.get("manually_edited"):
         logger.info("笔记 %s 已被人工编辑，跳过 OCR，仅重算 embedding/链接", note_id)
         database.update_note_status(note_id, "processing")
-        client = _get_client()
+        client = _get_client("embedding")
         try:
             if client is None:
                 embedding = _demo_embedding(seed=note_id)
@@ -1050,8 +1049,8 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                 database.update_note_fields(note_id, embedding=embedding)
                 database.insert_activity(
                     event_type="model",
-                    message=f"{get_config().EMBEDDING_MODEL} 完成笔记 #{note_id} 人工编辑向量更新",
-                    model=get_config().EMBEDDING_MODEL,
+                    message=f"{settings_store.get_runtime_model('embedding')} 完成笔记 #{note_id} 人工编辑向量更新",
+                    model=settings_store.get_runtime_model("embedding"),
                     device=note.get("source_device"),
                     app=note.get("source_app"),
                     note_id=note_id,
@@ -1068,8 +1067,10 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
             return False
 
     database.update_note_status(note_id, "processing")
-    client = _get_client()
-    is_demo = client is None
+    ocr_client = _get_client("ocr")
+    llm_client = _get_client("llm")
+    embedding_client = _get_client("embedding")
+    is_demo = ocr_client is None or llm_client is None or embedding_client is None
 
     try:
         # 文本型文件分支：直接抽文本 → LLM 结构化（不走 vision 模型）
@@ -1081,7 +1082,7 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                 raise RuntimeError("文本文件内容为空")
             is_markdown = ext in (".md", ".markdown")
             image_blocks: List[str] = []
-            if is_markdown and not is_demo:
+            if is_markdown and ocr_client is not None:
                 image_paths = extract_markdown_image_paths(file_path)
                 if image_paths:
                     image_blocks = _ocr_markdown_images(client, image_paths)
@@ -1090,11 +1091,11 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                 structured_text = raw_text + "\n\n" + "\n\n".join(image_blocks)
 
             used_model_id: Optional[str] = None
-            if is_demo:
+            if llm_client is None:
                 structured = _fallback_text_structured(raw_text, file_path)
                 embedding = _demo_embedding(seed=note_id)
             else:
-                structured = _structured_from_text(client, structured_text, model_id=model_id)
+                structured = _structured_from_text(llm_client, structured_text, model_id=model_id)
                 if structured:
                     # 文本型用 LLM_MODEL，标记为 "text-llm" 便于区分
                     used_model_id = "text-llm"
@@ -1110,7 +1111,11 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                     + "\n"
                     + (structured.get("ocr_text") or "")
                 )
-                embedding = _embed_text(client, embed_input)
+                embedding = (
+                    _embed_text(embedding_client, embed_input)
+                    if embedding_client is not None
+                    else _demo_embedding(seed=note_id)
+                )
         else:
             # 图像型文件分支（PDF/PNG/JPG）：走原有 vision OCR 路径
             images = file_to_images(file_path)
@@ -1118,12 +1123,12 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                 raise RuntimeError("未能从文件提取到任何图像")
 
             used_model_id = None
-            if is_demo:
+            if ocr_client is None:
                 logger.info("[demo] 处理笔记 %s (%s)", note_id, file_path)
                 structured = _demo_structured(file_path)
                 embedding = _demo_embedding(seed=note_id)
             else:
-                structured, used_model_id = _ocr_structured(client, images, model_id=model_id, file_path=file_path)
+                structured, used_model_id = _ocr_structured(ocr_client, images, model_id=model_id, file_path=file_path)
                 if not structured:
                     raise RuntimeError("LLM 返回内容无法解析为 JSON（所有候选模型均失败）")
                 embed_input = (
@@ -1133,7 +1138,11 @@ def process_note(note_id: int, model_id: Optional[str] = None) -> bool:
                     + "\n"
                     + (structured.get("ocr_text") or "")
                 )
-                embedding = _embed_text(client, embed_input)
+                embedding = (
+                    _embed_text(embedding_client, embed_input)
+                    if embedding_client is not None
+                    else _demo_embedding(seed=note_id)
+                )
 
         # 缩略图
         cfg = get_config()

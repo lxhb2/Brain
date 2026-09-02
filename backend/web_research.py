@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 import database
+import settings_store
 from config import get_config
 from ocr_processor import _get_client
 
@@ -193,7 +194,7 @@ def _plan_research(
 限制：keywords 最多 5 个；support_query 和 oppose_query 各不能超过 20 个字；只在存在真实分歧或证据冲突时把 debate_recommended 设为 true。"""
     try:
         resp = client.chat.completions.create(
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            model=settings_store.get_qa_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=700,
@@ -432,7 +433,7 @@ def research(
         )
         try:
             response = client.chat.completions.create(
-                model=cfg.QA_MODEL or cfg.LLM_MODEL,
+                model=settings_store.get_qa_model(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
                 max_tokens=2200,
@@ -454,10 +455,10 @@ def research(
         database.insert_activity(
             event_type="model",
             message=(
-                f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成{('验证' if mode == 'verify' else '辩论')}报告，"
+                f"{settings_store.get_qa_model()} 完成{('验证' if mode == 'verify' else '辩论')}报告，"
                 f"联网证据 {len(evidence)} 条"
             ),
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            model=settings_store.get_qa_model(),
         )
     except Exception:
         logger.debug("联网报告日志写入失败", exc_info=True)

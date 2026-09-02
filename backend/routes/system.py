@@ -84,8 +84,10 @@ def health() -> Dict[str, Any]:
     except Exception:
         components["db"] = "error"
 
-    # LLM key 是否配置
-    components["llm"] = "ok" if cfg.OPENAI_API_KEY else "unconfigured"
+    # 三类 API key 是否配置
+    components["ocr"] = "ok" if settings_store.get_api_config("ocr")["api_key_set"] else "unconfigured"
+    components["llm"] = "ok" if settings_store.get_api_config("llm")["api_key_set"] else "unconfigured"
+    components["embedding"] = "ok" if settings_store.get_api_config("embedding")["api_key_set"] else "unconfigured"
 
     degraded = any(v in ("error", "stopped") for v in components.values())
     db_dir = os.path.abspath(os.path.dirname(cfg.DB_PATH))
@@ -102,11 +104,12 @@ def health() -> Dict[str, Any]:
     return {
         "status": status_value,
         "components": components,
-        "openai_configured": bool(cfg.OPENAI_API_KEY),
+        "openai_configured": bool(settings_store.get_api_config("llm")["api_key_set"]),
         "baidu_ocr_enabled": bool(cfg.BAIDU_OCR_ENABLED and cfg.BAIDU_OCR_API_KEY and cfg.BAIDU_OCR_SECRET_KEY),
-        "llm_model": model_cfg.get("llm_model", cfg.LLM_MODEL),
+        "ocr_model": settings_store.get_runtime_model("ocr"),
+        "llm_model": settings_store.get_runtime_model("llm"),
         "qa_model": model_cfg.get("qa_model", cfg.QA_MODEL),
-        "embedding_model": model_cfg.get("embedding_model", cfg.EMBEDDING_MODEL),
+        "embedding_model": settings_store.get_runtime_model("embedding"),
         "data_mount": {
             "verified": mount_verified,
             "probe_path": "/app/data/.brain-mount-probe",

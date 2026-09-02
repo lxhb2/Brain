@@ -35,7 +35,14 @@ class Settings(BaseSettings):
     # 可在 .env 或运行时设置页切换为 OpenAI / 其他兼容服务
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_BASE_URL: Optional[str] = "https://api.siliconflow.cn/v1"
-    # 视觉 OCR 模型（需支持 image_url 多模态）
+    # 视觉 OCR API（留空时回退到 OPENAI_API_KEY / OPENAI_BASE_URL）
+    OCR_API_KEY: Optional[str] = None
+    OCR_BASE_URL: Optional[str] = None
+    OCR_MODEL: str = "Pro/moonshotai/Kimi-K2.6"
+
+    # 通用文本 LLM API（留空时回退到 OPENAI_API_KEY / OPENAI_BASE_URL）
+    LLM_API_KEY: Optional[str] = None
+    LLM_BASE_URL: Optional[str] = None
     LLM_MODEL: str = "Pro/moonshotai/Kimi-K2.6"
 
     # 百度智能云 OCR（手写文字识别，专用接口，准确率更高）
@@ -47,6 +54,8 @@ class Settings(BaseSettings):
     BAIDU_OCR_ENABLED: bool = False
     # 纯文本问答模型（RAG 用，便宜快速；为空则回退到 LLM_MODEL）
     QA_MODEL: str = "deepseek-ai/DeepSeek-V3.2"
+    EMBEDDING_API_KEY: Optional[str] = None
+    EMBEDDING_BASE_URL: Optional[str] = None
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     EMBEDDING_DIM: int = 1024  # bge-m3 默认维度
 

@@ -137,10 +137,42 @@ Brain 默认连接本机 LM Studio 提供的 OpenAI 兼容 API：
 
 | 用途 | 模型 | 说明 |
 |------|------|------|
-| OCR 结构化 / RAG 问答 / 分诊 / 审核 | `qwen3.5-4b` | Qwen3.5 4B，API ID 使用短横线 |
+| OCR 识别 | `qwen3.5-4b` | 需支持多模态 image_url |
+| RAG 问答 / 分诊 / 审核 | `qwen3.5-4b` | 通用文本 LLM，API ID 使用短横线 |
 | 向量嵌入 | `text-embedding-nomic-embed-text-v1.5` | 输出 768 维向量 |
 
-`.env` 关键配置：
+### 模型 API 配置
+
+访问 `http://127.0.0.1:8080/settings` 的「模型配置」页，可以为三组 API 单独配置 Base URL、API Key 和模型 ID：
+
+| API 组 | 用途 | 关键要求 |
+|--------|------|----------|
+| OCR | 图片 / PDF / Markdown 内嵌图片识别 | 模型需支持 `image_url` |
+| LLM | 问答、Agent、分诊、审核、辩论和文本结构化 | OpenAI 兼容 Chat Completions |
+| Embedding | 笔记向量、混合检索和知识图谱 | 向量维度需与 `EMBEDDING_DIM` 一致 |
+
+也可以通过环境变量配置；三组变量留空时回退到旧版 `OPENAI_API_KEY` / `OPENAI_BASE_URL`：
+
+```env
+OCR_API_KEY=lm-studio
+OCR_BASE_URL=http://host.docker.internal:1234/v1
+OCR_MODEL=qwen3.5-4b
+
+LLM_API_KEY=lm-studio
+LLM_BASE_URL=http://host.docker.internal:1234/v1
+LLM_MODEL=qwen3.5-4b
+QA_MODEL=qwen3.5-4b
+
+EMBEDDING_API_KEY=lm-studio
+EMBEDDING_BASE_URL=http://host.docker.internal:1234/v1
+EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5
+EMBEDDING_DIM=768
+BRAIN_DATA_DIR=/home/lxhb/.local/var/brain
+```
+
+设置页保存的 API Key 会写入本机 SQLite 设置表，但接口不回显明文；修改后无需重启，下一次调用会自动使用新配置。
+
+`.env` 旧版共享配置（可选）：
 
 ```env
 OPENAI_API_KEY=lm-studio

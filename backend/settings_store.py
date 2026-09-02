@@ -6,10 +6,9 @@ env 变量仅作为「首次启动的默认种子」。
 
 设置的 key 划分：
   - watch_folders: 监听文件夹列表 [{id, path, device, app, enabled, recursive}]
-  - model:         模型配置 {llm_model, embedding_model, openai_api_key_masked,
-                            openai_base_url, embedding_dim}
+  - model:         OCR / LLM / Embedding 三组 API 配置；明文 key 只写库、不回显
   - ocr_models:    OCR 模型列表 [{id, name, model, enabled, is_primary}]
-                    多模型配置，共用 OPENAI_BASE_URL/OPENAI_API_KEY
+                    多模型 fallback 共用 OCR API 配置
   - relay:         中继器位置 {location: local|cloud, host, port, note}
   - link_params:   链接权重 {alpha, beta, gamma, threshold}
   - ui:            前端偏好 {theme, device_override}
@@ -30,6 +29,7 @@ from config import get_config, normalize_abs_watch_path, normalize_watch_path
 _cache: Dict[str, Any] = {}
 _cache_lock = threading.Lock()
 _loaded = False
+_API_KINDS = ("ocr", "llm", "embedding")
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +154,14 @@ def _ensure_cloud_watch_folder(folders: List[Dict[str, Any]]) -> bool:
 def _seed_model() -> Dict[str, Any]:
     cfg = get_config()
     return {
+        "ocr_model": cfg.OCR_MODEL,
+        "ocr_base_url": cfg.OCR_BASE_URL or cfg.OPENAI_BASE_URL or "",
         "llm_model": cfg.LLM_MODEL,
+        "llm_base_url": cfg.LLM_BASE_URL or cfg.OPENAI_BASE_URL or "",
         "qa_model": cfg.QA_MODEL,
         "embedding_model": cfg.EMBEDDING_MODEL,
         "embedding_dim": cfg.EMBEDDING_DIM,
+        "embedding_base_url": cfg.EMBEDDING_BASE_URL or cfg.OPENAI_BASE_URL or "",
         "openai_base_url": cfg.OPENAI_BASE_URL or "",
         # API Key 仅保存是否已配置的布尔，明文 key 始终只读 env，不落库
         "openai_api_key_set": bool(cfg.OPENAI_API_KEY),
@@ -246,19 +250,118 @@ def set_watch_folders(folders: List[Dict[str, Any]]) -> None:
     _set_raw("watch_folders", folders)
 
 
-def get_model_config() -> Dict[str, Any]:
+def _ensure_model_config() -> Dict[str, Any]:
+    """读取原始模型配置，并为旧数据补上三组 API 字段。"""
+    cfg = get_config()
     val = _get_raw("model")
-    if val is None:
+    if not isinstance(val, dict):
         val = _seed_model()
+    defaults = {
+        "ocr_model": cfg.OCR_MODEL or cfg.LLM_MODEL,
+        "ocr_base_url": cfg.OCR_BASE_URL or cfg.OPENAI_BASE_URL or "",
+        "llm_model": cfg.LLM_MODEL,
+        "llm_base_url": cfg.LLM_BASE_URL or cfg.OPENAI_BASE_URL or "",
+        "qa_model": cfg.QA_MODEL or cfg.LLM_MODEL,
+        "embedding_model": cfg.EMBEDDING_MODEL,
+        "embedding_dim": cfg.EMBEDDING_DIM,
+        "embedding_base_url": cfg.EMBEDDING_BASE_URL or cfg.OPENAI_BASE_URL or "",
+        "openai_base_url": cfg.OPENAI_BASE_URL or "",
+    }
+    changed = False
+    for key, default in defaults.items():
+        if key not in val:
+            val[key] = default
+            changed = True
+    if changed:
         _set_raw("model", val)
-    return val  # type: ignore[return-value]
+    return val
+
+
+def _public_model_config(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """返回前端可见配置；API key 只返回是否已设置。"""
+    cfg = get_config()
+    out = dict(raw)
+    for kind in _API_KINDS:
+        key_field = f"{kind}_api_key"
+        out.pop(key_field, None)
+        out[f"{key_field}_set"] = bool(
+            raw.get(key_field) or getattr(cfg, key_field.upper(), None) or cfg.OPENAI_API_KEY
+        )
+    out["openai_api_key_set"] = bool(cfg.OPENAI_API_KEY)
+    return out
+
+
+def get_model_config() -> Dict[str, Any]:
+    """返回安全化的模型配置，供 API / 前端使用。"""
+    return _public_model_config(_ensure_model_config())
 
 
 def set_model_config(cfg_dict: Dict[str, Any]) -> None:
-    """更新模型配置。API Key 通过单独接口设置，这里不接收明文 key。"""
-    cur = get_model_config()
-    cur.update({k: v for k, v in cfg_dict.items() if k != "openai_api_key"})
+    """更新模型配置。专用 API key 支持运行时设置，但不会回显明文。"""
+    cur = _ensure_model_config()
+    for key, value in cfg_dict.items():
+        if key == "openai_api_key" or key.endswith("_api_key_set"):
+            continue
+        if key.endswith("_api_key"):
+            key_value = str(value or "").strip()
+            # 空值表示“保持不变”，避免只改模型名时误清空密钥。
+            if key_value:
+                cur[key] = key_value
+            continue
+        if key == "embedding_dim":
+            try:
+                cur[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        else:
+            cur[key] = value
     _set_raw("model", cur)
+
+
+def get_api_config(kind: str) -> Dict[str, Any]:
+    """获取一组实际生效的 API 配置。kind 必须是 ocr / llm / embedding。"""
+    if kind not in _API_KINDS:
+        raise ValueError(f"未知的 API 类型: {kind}")
+    raw = _ensure_model_config()
+    cfg = get_config()
+    upper = kind.upper()
+    fallback_model = {
+        "ocr": cfg.OCR_MODEL or cfg.LLM_MODEL,
+        "llm": cfg.LLM_MODEL,
+        "embedding": cfg.EMBEDDING_MODEL,
+    }[kind]
+    return {
+        "model": str(raw.get(f"{kind}_model") or fallback_model),
+        "base_url": str(
+            raw.get(f"{kind}_base_url")
+            or getattr(cfg, f"{upper}_BASE_URL", None)
+            or cfg.OPENAI_BASE_URL
+            or ""
+        ),
+        "api_key": str(
+            raw.get(f"{kind}_api_key")
+            or getattr(cfg, f"{upper}_API_KEY", None)
+            or cfg.OPENAI_API_KEY
+            or ""
+        ),
+        "api_key_set": bool(
+            raw.get(f"{kind}_api_key")
+            or getattr(cfg, f"{upper}_API_KEY", None)
+            or cfg.OPENAI_API_KEY
+        ),
+        "qa_model": str(raw.get("qa_model") or cfg.QA_MODEL or cfg.LLM_MODEL),
+        "embedding_dim": int(raw.get("embedding_dim") or cfg.EMBEDDING_DIM),
+    }
+
+
+def get_runtime_model(kind: str) -> str:
+    """返回实际调用的模型 ID。"""
+    return get_api_config(kind)["model"]
+
+
+def get_qa_model() -> str:
+    """返回问答 / Agent 实际使用的模型 ID。"""
+    return get_api_config("llm")["qa_model"]
 
 
 def get_relay_config() -> Dict[str, Any]:
@@ -331,7 +434,10 @@ def reset_ocr_models() -> None:
 
     用于切换默认模型后让设置页生效，或修复历史误配置。
     """
-    _set_raw("ocr_models", _seed_ocr_models())
+    cfg = get_config()
+    seed = _seed_ocr_models()
+    seed[0]["model"] = get_runtime_model("ocr") or cfg.LLM_MODEL
+    _set_raw("ocr_models", seed)
 
 
 def get_primary_ocr_model() -> Optional[Dict[str, Any]]:

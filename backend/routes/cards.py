@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 import database
+import settings_store
 from config import get_config
 from ocr_processor import _get_client
 
@@ -94,7 +95,7 @@ def _evaluate_user_answer(
     )
     try:
         resp = client.chat.completions.create(
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            model=settings_store.get_qa_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=2000,

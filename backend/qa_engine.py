@@ -24,6 +24,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 import database
+import settings_store
 from config import get_config
 from ocr_processor import _demo_embedding, _get_client, _embed_text
 
@@ -132,7 +133,7 @@ def _generate_card_draft(
     )
     try:
         resp = client.chat.completions.create(
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            model=settings_store.get_qa_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=2500,
@@ -609,7 +610,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                 (m.get("memory") or {}).get("content", "")[:50] for m in memories_used
             )
         answer = (
-            f"[demo 模式 — 设置 OPENAI_API_KEY 以启用真实问答]\n"
+            f"[demo 模式 — 配置 LLM API 后启用真实问答]\n"
             f"基于向量检索，找到以下 {len(citations)} 条相关笔记：{titles}。"
             f"这些笔记与你的问题在语义上最接近。{mem_str}"
         )
@@ -656,7 +657,7 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
             # 达到上限：最后一次调用不再带 tools，强制让 LLM 给最终答案
             use_tools = tool_call_count < _MAX_TOOL_CALLS
             resp = client.chat.completions.create(
-                model=cfg.QA_MODEL or cfg.LLM_MODEL,
+                model=settings_store.get_qa_model(),
                 messages=messages,
                 tools=_TOOLS if use_tools else None,
                 temperature=0.2,
@@ -742,8 +743,8 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
             logger.warning("累计答案真实引用的卡片失败 qa_id=%s: %s", qa_id, e)
     database.insert_activity(
         event_type="model",
-        message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id}，真实引用 {len(cited_note_ids)} 条笔记 / {len(cited_card_ids)} 张卡片，调用 {len(tools_used)} 次工具",
-        model=cfg.QA_MODEL or cfg.LLM_MODEL,
+        message=f"{settings_store.get_qa_model()} 完成问答 #{qa_id}，真实引用 {len(cited_note_ids)} 条笔记 / {len(cited_card_ids)} 张卡片，调用 {len(tools_used)} 次工具",
+        model=settings_store.get_qa_model(),
     )
 
     # 异步生成知识卡片草稿（不阻塞主流程，失败不影响 QA 结果）
@@ -768,8 +769,8 @@ def ask(question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
                 database.update_qa_card_draft(qa_id, card_draft)
                 database.insert_activity(
                     event_type="model",
-                    message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成问答 #{qa_id} 的知识卡片草稿「{card_draft.get('title', '')}」",
-                    model=cfg.QA_MODEL or cfg.LLM_MODEL,
+                    message=f"{settings_store.get_qa_model()} 完成问答 #{qa_id} 的知识卡片草稿「{card_draft.get('title', '')}」",
+                    model=settings_store.get_qa_model(),
                     note_id=source_note_ids[0] if source_note_ids else None,
                 )
     except Exception as e:

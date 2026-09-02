@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 import database
 import growth
 import ocr_processor
+import settings_store
 from config import get_config, get_watch_dirs_runtime
 
 logger = logging.getLogger("brain.scheduler")
@@ -256,7 +257,7 @@ def generate_daily_summary(target_date: Optional[str] = None) -> Optional[Dict[s
 
     try:
         resp = client.chat.completions.create(
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            model=settings_store.get_qa_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=3000,
@@ -270,8 +271,8 @@ def generate_daily_summary(target_date: Optional[str] = None) -> Optional[Dict[s
         cfg = get_config()
         database.insert_activity(
             event_type="model",
-            message=f"{cfg.QA_MODEL or cfg.LLM_MODEL} 完成每日归纳，覆盖 {len(notes)} 条笔记",
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            message=f"{settings_store.get_qa_model()} 完成每日归纳，覆盖 {len(notes)} 条笔记",
+            model=settings_store.get_qa_model(),
         )
         logger.info("每日归纳完成：%s 共 %d 条笔记，归纳 id=%s",
                     target_date, len(notes), summary_id)

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 import settings_store
 import watcher
 from config import get_config, normalize_abs_watch_path
+from ocr_processor import clear_client_cache
 
 router = APIRouter(prefix="/api", tags=["settings"])
 
@@ -68,6 +69,8 @@ def update_settings(body: SettingsUpdate) -> Dict[str, Any]:
             watcher.reconfigure_watcher()
         except Exception:
             pass
+    # 三类 API 都可能换 endpoint/key；清空缓存让下一次调用立即使用新配置。
+    clear_client_cache()
     return settings_store.get_all_settings()
 
 
@@ -90,7 +93,7 @@ def list_ocr_models() -> Dict[str, Any]:
 
 @router.post("/ocr-models/reset")
 def reset_ocr_models() -> Dict[str, Any]:
-    """重置 OCR 模型列表为默认配置（用 config.LLM_MODEL 作为 primary）。
+    """重置 OCR 模型列表为默认配置（用 OCR API 模型作为 primary）。
 
     用于修复历史误配置或切换默认模型后让设置页生效。
     """

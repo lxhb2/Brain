@@ -362,77 +362,115 @@ function ModelTab({
   onSave: (patch: Partial<AllSettings>) => void
   saving: boolean
 }) {
+  const [ocrModel, setOcrModel] = useState(settings.model.ocr_model)
+  const [ocrBaseUrl, setOcrBaseUrl] = useState(settings.model.ocr_base_url)
+  const [ocrApiKey, setOcrApiKey] = useState('')
   const [llmModel, setLlmModel] = useState(settings.model.llm_model)
+  const [llmBaseUrl, setLlmBaseUrl] = useState(settings.model.llm_base_url)
+  const [llmApiKey, setLlmApiKey] = useState('')
   const [qaModel, setQaModel] = useState(settings.model.qa_model ?? '')
   const [embeddingModel, setEmbeddingModel] = useState(settings.model.embedding_model)
-  const [baseUrl, setBaseUrl] = useState(settings.model.openai_base_url)
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState(settings.model.embedding_base_url)
+  const [embeddingApiKey, setEmbeddingApiKey] = useState('')
+  const [embeddingDim, setEmbeddingDim] = useState(settings.model.embedding_dim)
 
   useEffect(() => {
+    setOcrModel(settings.model.ocr_model)
+    setOcrBaseUrl(settings.model.ocr_base_url)
+    setOcrApiKey('')
     setLlmModel(settings.model.llm_model)
+    setLlmBaseUrl(settings.model.llm_base_url)
+    setLlmApiKey('')
     setQaModel(settings.model.qa_model ?? '')
     setEmbeddingModel(settings.model.embedding_model)
-    setBaseUrl(settings.model.openai_base_url)
+    setEmbeddingBaseUrl(settings.model.embedding_base_url)
+    setEmbeddingApiKey('')
+    setEmbeddingDim(settings.model.embedding_dim)
   }, [settings.model])
+
+  const saveModel = () => {
+    onSave({
+      model: {
+        ...settings.model,
+        ocr_model: ocrModel,
+        ocr_base_url: ocrBaseUrl,
+        ocr_api_key: ocrApiKey || undefined,
+        llm_model: llmModel,
+        llm_base_url: llmBaseUrl,
+        llm_api_key: llmApiKey || undefined,
+        qa_model: qaModel,
+        embedding_model: embeddingModel,
+        embedding_base_url: embeddingBaseUrl,
+        embedding_api_key: embeddingApiKey || undefined,
+        embedding_dim: embeddingDim,
+      },
+    })
+  }
+
+  const field = (
+    label: string,
+    value: string | number,
+    onChange: (value: string) => void,
+    placeholder = '',
+    type: 'text' | 'password' = 'text',
+  ) => (
+    <div>
+      <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">
+        {label}
+      </label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
+      />
+    </div>
+  )
 
   return (
     <div className="max-w-2xl space-y-5">
+      <div className="rounded-xl border border-azure/20 bg-azure/5 p-3 text-xs leading-relaxed text-dust">
+        OCR、LLM 和 Embedding 支持三套不同的 OpenAI 兼容 API。API Key 只保存在本机数据库，
+        保存后不会回显；留空表示保持原 Key 不变。
+      </div>
+
       <div className="glass-panel rounded-xl p-4">
         <div className="mb-3 flex items-center gap-2 text-dust">
-          <Cpu className="h-4 w-4" strokeWidth={1.5} />
-          <span className="text-sm">LLM 与 OCR 模型</span>
+          <Camera className="h-4 w-4" strokeWidth={1.5} />
+          <span className="text-sm">OCR API</span>
         </div>
         <div className="space-y-3">
-          <div>
-            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">视觉 OCR 模型（需支持 image_url）</label>
-            <input
-              value={llmModel}
-              onChange={(e) => setLlmModel(e.target.value)}
-              placeholder="Qwen/Qwen3-VL-32B-Instruct"
-              className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">问答模型（RAG，留空则用上面的 OCR 模型）</label>
-            <input
-              value={qaModel}
-              onChange={(e) => setQaModel(e.target.value)}
-              placeholder="deepseek-ai/DeepSeek-V3.2"
-              className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">Embedding 模型</label>
-            <input
-              value={embeddingModel}
-              onChange={(e) => setEmbeddingModel(e.target.value)}
-              placeholder="BAAI/bge-m3"
-              className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-dust/70">OpenAI 兼容端点</label>
-            <input
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://api.siliconflow.cn/v1"
-              className="w-full rounded-lg border border-white/10 bg-void-500/40 px-3 py-2.5 text-sm text-starlight placeholder:text-dust/50 focus:border-flux/40 focus:outline-none"
-            />
-          </div>
+          {field('Base URL', ocrBaseUrl, setOcrBaseUrl, 'https://api.siliconflow.cn/v1')}
+          {field('API Key', ocrApiKey, setOcrApiKey, settings.model.ocr_api_key_set ? '已配置，留空不变' : 'sk-...', 'password')}
+          {field('视觉模型 ID', ocrModel, setOcrModel, 'Qwen/Qwen3-VL-32B-Instruct')}
         </div>
       </div>
 
-      {/* API Key 状态 */}
       <div className="glass-panel rounded-xl p-4">
-        <div className="mb-2 flex items-center gap-2">
-          <span className={cn('h-2 w-2 rounded-full', settings.model.openai_api_key_set ? 'bg-flux' : 'bg-amber')} />
-          <span className="text-sm text-starlight">
-            {settings.model.openai_api_key_set ? 'API Key 已配置（通过环境变量 OPENAI_API_KEY）' : '未配置 API Key · 当前为 Demo 模式'}
-          </span>
+        <div className="mb-3 flex items-center gap-2 text-dust">
+          <Cpu className="h-4 w-4" strokeWidth={1.5} />
+          <span className="text-sm">LLM API</span>
         </div>
-        <p className="text-xs leading-relaxed text-dust">
-          出于安全考虑，API Key 不在此页面配置，请在中继机的 <code className="rounded bg-white/5 px-1 font-mono">.env</code> 文件或环境变量中设置
-          <code className="ml-1 rounded bg-white/5 px-1 font-mono">OPENAI_API_KEY</code>，重启后端生效。
-        </p>
+        <div className="space-y-3">
+          {field('Base URL', llmBaseUrl, setLlmBaseUrl, 'https://api.siliconflow.cn/v1')}
+          {field('API Key', llmApiKey, setLlmApiKey, settings.model.llm_api_key_set ? '已配置，留空不变' : 'sk-...', 'password')}
+          {field('通用 LLM 模型 ID', llmModel, setLlmModel, 'deepseek-ai/DeepSeek-V3.2')}
+          {field('问答模型 ID（可选，默认用通用 LLM）', qaModel, setQaModel, 'deepseek-ai/DeepSeek-V3.2')}
+        </div>
+      </div>
+
+      <div className="glass-panel rounded-xl p-4">
+        <div className="mb-3 flex items-center gap-2 text-dust">
+          <DbIcon className="h-4 w-4" strokeWidth={1.5} />
+          <span className="text-sm">Embedding API</span>
+        </div>
+        <div className="space-y-3">
+          {field('Base URL', embeddingBaseUrl, setEmbeddingBaseUrl, 'https://api.siliconflow.cn/v1')}
+          {field('API Key', embeddingApiKey, setEmbeddingApiKey, settings.model.embedding_api_key_set ? '已配置，留空不变' : 'sk-...', 'password')}
+          {field('Embedding 模型 ID', embeddingModel, setEmbeddingModel, 'BAAI/bge-m3')}
+          {field('向量维度', embeddingDim, (value) => setEmbeddingDim(parseInt(value, 10) || 0), '1024')}
+        </div>
       </div>
 
       {/* 链接权重参数 */}
@@ -449,7 +487,7 @@ function ModelTab({
       </div>
 
       <button
-        onClick={() => onSave({ model: { ...settings.model, llm_model: llmModel, qa_model: qaModel, embedding_model: embeddingModel, openai_base_url: baseUrl } })}
+        onClick={saveModel}
         disabled={saving}
         className="btn-ghost w-full justify-center"
       >
@@ -619,7 +657,7 @@ function OcrModelsTab({
         <p className="text-xs leading-relaxed text-dust">
           配置多个 OCR 模型，新笔记自动用<b className="text-flux">主模型</b>识别；
           失败时按启用顺序自动 <b className="text-flux">fallback</b> 到下一个。
-          所有模型共用上方「模型配置」中的 OpenAI 端点和 API Key。
+          所有 OCR fallback 共用「模型配置」里的 OCR API 端点和 Key，可与其他模型使用不同服务。
           笔记详情页可用任意模型<i>重新 OCR</i> 对比效果。
         </p>
         <div className="mt-3 grid grid-cols-1 gap-1.5 text-[11px] text-dust/80 sm:grid-cols-2">

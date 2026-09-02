@@ -240,6 +240,7 @@ export interface KnowledgeCardReview extends KnowledgeCard {
 export interface Health {
   status: string
   openai_configured: boolean
+  ocr_model?: string
   llm_model: string
   embedding_model: string
   data_mount?: {
@@ -262,9 +263,19 @@ export interface WatchFolder {
 }
 
 export interface ModelConfig {
+  ocr_api_key?: string
+  ocr_model: string
+  ocr_base_url: string
+  ocr_api_key_set: boolean
   llm_model: string
+  llm_base_url: string
+  llm_api_key?: string
+  llm_api_key_set: boolean
   qa_model: string
   embedding_model: string
+  embedding_base_url: string
+  embedding_api_key?: string
+  embedding_api_key_set: boolean
   embedding_dim: number
   openai_base_url: string
   openai_api_key_set: boolean

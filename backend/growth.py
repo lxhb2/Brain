@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 import database
+import settings_store
 from config import get_config
 from ocr_processor import _completion_text, _get_client, _strip_fences
 
@@ -90,7 +91,7 @@ def triage_note(note: Dict[str, Any]) -> bool:
     cfg = get_config()
     try:
         resp = client.chat.completions.create(
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            model=settings_store.get_qa_model(),
             messages=[{"role": "user", "content": _triage_prompt(_preview(note))}],
             response_format={"type": "json_schema", "json_schema": _TRIAGE_JSON_SCHEMA},
             temperature=0.1,
@@ -121,7 +122,7 @@ def triage_note(note: Dict[str, Any]) -> bool:
             next_action_text=str(data.get("next_action") or "")[:1000],
             confidence=float(data.get("confidence") or 0.5),
         )
-        model_name = cfg.QA_MODEL or cfg.LLM_MODEL
+        model_name = settings_store.get_qa_model()
         database.insert_activity(
             event_type="model",
             message=f"{model_name} 分诊笔记 #{note['id']} 为 {kind}",
@@ -203,7 +204,7 @@ def generate_daily_review(target_date: Optional[str] = None) -> Optional[Dict[st
 
     try:
         resp = client.chat.completions.create(
-            model=cfg.QA_MODEL or cfg.LLM_MODEL,
+            model=settings_store.get_qa_model(),
             messages=[
                 {"role": "system", "content": "你严格、具体、反对无效收藏，帮助用户把知识变成行为改进。"},
                 {"role": "user", "content": prompt},
@@ -218,7 +219,7 @@ def generate_daily_review(target_date: Optional[str] = None) -> Optional[Dict[st
             return None
         content["system_metrics"] = stats
         content["due_card_ids"] = [int(c["id"]) for c in due_cards]
-        model_name = cfg.QA_MODEL or cfg.LLM_MODEL
+        model_name = settings_store.get_qa_model()
         review_id = database.upsert_growth_review(
             review_date=review_date,
             content=content,
